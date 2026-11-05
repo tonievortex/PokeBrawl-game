@@ -80,6 +80,7 @@ class LauncherForm : Form
 
 	readonly Options opt;
 	readonly Label status = new Label();
+	readonly Label info = new Label();
 	readonly ProgressBar bar = new ProgressBar();
 	readonly string godotDir;
 	readonly string godotExe;
@@ -87,6 +88,7 @@ class LauncherForm : Form
 	readonly string gameDir;
 	readonly string shaFile;
 	readonly string logFile;
+	string remoteMessage = "";            // the newest commit's message (first line)
 
 	public LauncherForm(Options options)
 	{
@@ -118,11 +120,21 @@ class LauncherForm : Form
 		status.Font = new Font("Segoe UI", 11f);
 		status.AutoSize = false;
 		status.Size = new Size(504, 26);
-		status.Location = new Point(30, 100);
+		status.AutoEllipsis = true;
+		status.Location = new Point(30, 112);
 		status.Text = "Starting...";
 		Controls.Add(status);
 
-		bar.Location = new Point(30, 136);
+		// What the newest update is about: the commit's message.
+		info.ForeColor = Color.FromArgb(156, 156, 168);
+		info.Font = new Font("Segoe UI", 9.5f);
+		info.AutoSize = false;
+		info.Size = new Size(504, 22);
+		info.AutoEllipsis = true;
+		info.Location = new Point(32, 82);
+		Controls.Add(info);
+
+		bar.Location = new Point(30, 146);
 		bar.Size = new Size(500, 18);
 		bar.Style = ProgressBarStyle.Marquee;
 		Controls.Add(bar);
@@ -198,12 +210,19 @@ class LauncherForm : Form
 		{
 			Log("--- start (repo " + opt.Repo + ", branch " + opt.Branch + ")");
 			Directory.CreateDirectory(opt.InstallDir);
+			// Ask GitHub first: what the newest update is about shows from the very start.
+			Say("Looking for updates...", -1);
+			string remote = RemoteSha();
+			if (remote != null && remoteMessage != "")
+			{
+				string line = "Latest change (" + remote.Substring(0, 7) + "): " + remoteMessage;
+				Log(line);
+				UI(delegate { info.Text = line; });
+			}
 			EnsureGodot();
 
 			string have = File.Exists(shaFile) ? File.ReadAllText(shaFile).Trim() : "";
 			bool installed = File.Exists(Path.Combine(gameDir, "project.godot")) && have != "";
-			Say("Looking for updates...", -1);
-			string remote = RemoteSha();
 
 			if (remote == null)
 			{
@@ -323,20 +342,30 @@ class LauncherForm : Form
 
 	// ------------------------------------------------------------ GitHub
 
-	/// The commit of the branch on GitHub, or null if it cannot be reached.
+	/// The commit of the branch on GitHub, or null if it cannot be reached. Its message (first
+	/// line) goes to `remoteMessage`, to show what the update is about.
 	string RemoteSha()
 	{
 		try
 		{
 			var req = (HttpWebRequest)WebRequest.Create("https://api.github.com/repos/" + opt.Repo + "/commits/" + opt.Branch);
 			req.UserAgent = "PokeBrawl-Launcher";
-			req.Accept = "application/vnd.github.sha";
+			req.Accept = "application/vnd.github+json";
 			req.Timeout = 15000;
 			using (var resp = (HttpWebResponse)req.GetResponse())
-			using (var rd = new StreamReader(resp.GetResponseStream()))
+			using (var rd = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
 			{
-				string sha = rd.ReadToEnd().Trim();
-				return Regex.IsMatch(sha, "^[0-9a-f]{40}$") ? sha : null;
+				string json = rd.ReadToEnd();
+				Match sha = Regex.Match(json, "\"sha\"\\s*:\\s*\"([0-9a-f]{40})\"");
+				// The first "message" in the answer is the commit's own (the author's fields come before it).
+				Match msg = Regex.Match(json, "\"message\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+				if (msg.Success)
+				{
+					string text = Regex.Unescape(msg.Groups[1].Value).Replace("\r", "");
+					int nl = text.IndexOf('\n');
+					remoteMessage = (nl >= 0 ? text.Substring(0, nl) : text).Trim();
+				}
+				return sha.Success ? sha.Groups[1].Value : null;
 			}
 		}
 		catch (Exception e)
