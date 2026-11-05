@@ -99,6 +99,11 @@ def main():
                 loser = [f for f in finals if not f["ranked"].get("won", True)]
                 check(len(loser) == 1 and "declined" in loser[0]["notice"].lower(),
                       "the one who asked sees that it was declined: %s" % [f["notice"] for f in finals])
+        server_log.flush()
+        with open(os.path.join(tmp, "server.log"), encoding="utf-8", errors="replace") as f:
+            backend_out = f.read()
+        check("(through the relay)" in backend_out and "both players are connected through the relay" in backend_out,
+              "the fight went through the backend's relay (no port opened anywhere)")
         if not ok:
             for i, out in enumerate(outs):
                 lines = [ln for ln in out.splitlines() if '"status": "waiting"' not in ln]

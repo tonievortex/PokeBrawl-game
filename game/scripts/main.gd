@@ -372,6 +372,8 @@ func _create(sp: String, eq: int, pos: Vector3, yaw: float, loadout := {}) -> Fi
 
 func rematch() -> void:
 	session.event("rematch")
+	if net:
+		net.epoch += 1          # the rival's states from the round that just ended are dropped
 	rematch_votes.clear()
 	var a: Fighter = fighters[0]
 	var b: Fighter = fighters[1]
@@ -414,7 +416,9 @@ func _on_defeat(who: Fighter) -> void:
 ## Hosts a game or joins someone else's. Returns an error or "".
 ## With "species" (a shortcut for arguments and tests) it is picked and marked ready on
 ## connecting; without it, once connected both go to the menu's selection.
-func start_net(as_host: bool, ip: String, species := "") -> String:
+## With "relay" ({host, port, match_id, token}: ranked matches) the fight goes through the
+## ranking server instead of straight between the players: no port to open.
+func start_net(as_host: bool, ip: String, species := "", relay := {}) -> String:
 	close_net()
 	net = Net.new()
 	net.main = self
@@ -436,7 +440,11 @@ func start_net(as_host: bool, ip: String, species := "") -> String:
 			menu.online_connected())
 	net.event.connect(_net_event)
 	net.disconnected.connect(_disconnection)
-	var err := net.create() if as_host else net.join(ip)
+	var err := ""
+	if not relay.is_empty():
+		err = net.create_via(relay) if as_host else net.join_via(relay)
+	else:
+		err = net.create() if as_host else net.join(ip)
 	session.event("net_start", {"role": "host" if as_host else "guest", "error": err})
 	net.connected.connect(func(): session.event("connected"))
 	return err
@@ -474,6 +482,7 @@ func _setup_net(a: Fighter, b: Fighter) -> void:
 	# net.frame counts the whole connection: reset, the rival would drop a second
 	# battle's packets as old.
 	net.in_battle = true
+	net.epoch = 0
 	if _args.has("bot"):
 		ai = AI.new()
 		ai.main = self

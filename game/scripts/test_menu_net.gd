@@ -37,7 +37,6 @@ var _ranked_done := false
 var _scenario := "accept"
 var _rm_count := 0            # ranked battles finished in this room
 var _rm_sent := false         # the key of the current step was pressed
-var _rm_old := 0              # match number of the battle that just ended
 
 
 func _ready() -> void:
@@ -269,6 +268,14 @@ func _ranked_after() -> void:
 			_capture("ranked_after")
 			_finish("")
 		return
+	# Accepted: the new battle began (same room, a new match number). The rating of the first
+	# one is cleared by then, so this is checked before waiting for it.
+	if _scenario == "accept" and _rm_count == 1 and r._live and int(r._match.get("match_id", 0)) != r._last_id and main._end_t < 0.0:
+		_step("rematch started: match %d" % int(r._match.match_id))
+		_ranked_done = false
+		_combat_t = -1.0
+		_rm_sent = false
+		return
 	if r.result.is_empty() or not r._pending.is_empty():
 		return          # the backend has not settled this match yet
 	_step("ranked result: %s (battle %d)" % [JSON.stringify(r.result), _rm_count])
@@ -279,7 +286,6 @@ func _ranked_after() -> void:
 			_capture("ranked_result_2")
 			_press("menu_back")
 		return
-	_rm_old = r._last_id
 	if not bool(r.result.get("won", false)):
 		if not _rm_sent and r.can_ask_rematch():
 			_rm_sent = true
@@ -289,12 +295,6 @@ func _ranked_after() -> void:
 		_rm_sent = true
 		_capture("rematch_prompt")
 		_press("jump" if _scenario == "accept" else "menu_back")
-	# Accepted: the new battle began (same room, a new match number).
-	if _scenario == "accept" and r._live and int(r._match.get("match_id", 0)) != _rm_old and main._end_t < 0.0:
-		_step("rematch started: match %d" % int(r._match.match_id))
-		_ranked_done = false
-		_combat_t = -1.0
-		_rm_sent = false
 
 
 func _round_end() -> void:

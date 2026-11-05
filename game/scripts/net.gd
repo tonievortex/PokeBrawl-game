@@ -36,6 +36,14 @@ var linked := false              # connected to the other player
 ## whole connection.
 var me := ""
 var in_battle := false
+## Which round of this room's battles we are in: a rematch starts a new one, on both sides.
+## States of the rival's old round (still arriving after we restarted) are dropped, else
+## its knocked-out Pokémon from the last battle would end the new one at once.
+var epoch := 0
+## Which round of this battle's room we are in: a rematch starts a new one, on both sides.
+## States of the rival's old round (still arriving after we restarted) are dropped, else
+## its knocked-out Pokémon from the last battle would end the new one at once.
+var round := 0
 var local: Fighter              # your own Pokémon
 var remote: Fighter             # the rival's copy
 var frame := 0
@@ -45,6 +53,8 @@ var jitter_sim := 0.0
 var loss_sim := 0.0
 var upnp_ok := false
 var public_ip := ""
+## Through the ranking server's relay (no port to open): the proxy between this ENet and it.
+var proxy: RelayProxy
 
 var _counters := {}            # own presses per action
 var _seen_list := {}                # last counters received from the other player
@@ -109,10 +119,60 @@ func _setup_peer() -> void:
 	_last_frame_other = -1
 
 
+## Hosts through the relay: the ENet server only listens on this computer (127.0.0.1) and the
+## proxy carries its packets to the relay. Nothing to open on any router.
+## relay: {host, port, match_id, token}
+func create_via(relay: Dictionary) -> String:
+	close()
+	var port := 0
+	for p in range(RelayProxy.FIRST_LOCAL_PORT - 70, RelayProxy.FIRST_LOCAL_PORT):
+		var candidate := ENetMultiplayerPeer.new()
+		candidate.set_bind_ip("127.0.0.1")
+		if candidate.create_server(p, 1, 2) == OK:
+			peer = candidate
+			port = p
+			break
+	if port == 0:
+		return tr("Could not open a local port")
+	proxy = RelayProxy.new()
+	add_child(proxy)
+	if not proxy.setup(relay, true, port):
+		close()
+		return tr("Could not reach the game server")
+	host = true
+	_setup_peer()
+	return ""
+
+
+## Joins through the relay: the ENet client connects to the proxy on this computer.
+func join_via(relay: Dictionary) -> String:
+	close()
+	proxy = RelayProxy.new()
+	add_child(proxy)
+	if not proxy.setup(relay, false):
+		close()
+		return tr("Could not reach the game server")
+	peer = ENetMultiplayerPeer.new()
+	if peer.create_client("127.0.0.1", proxy.local_port, 2) != OK:
+		close()
+		return tr("Invalid address")
+	host = false
+	_setup_peer()
+	return ""
+
+
+## Whether the relay knows this player (it answered), when playing through it.
+func relay_registered() -> bool:
+	return proxy != null and proxy.registered
+
+
 func close() -> void:
 	if peer:
 		peer.close()
 	peer = null
+	if proxy:
+		proxy.queue_free()
+		proxy = null
 	linked = false
 	in_battle = false
 	local = null
@@ -275,6 +335,8 @@ func _pack() -> PackedByteArray:
 	var b := StreamPeerBuffer.new()
 	b.put_u8(P_STATE)
 	b.put_u32(frame)
+	b.put_u8(epoch & 255)
+	b.put_u8(round & 255)
 	# Input: what the copy needs to do the same.
 	b.put_float(c.move_input.x)
 	b.put_float(c.move_input.y)
@@ -313,6 +375,10 @@ func _pack() -> PackedByteArray:
 
 func _read_state(b: StreamPeerBuffer) -> void:
 	var f := b.get_u32()
+	if b.get_u8() != (epoch & 255):
+		return   # the rival's other round (before or after a rematch)
+	if b.get_u8() != (round & 255):
+		return   # the rival's other round (before or after a rematch)
 	if f <= _last_frame_other and _last_frame_other - f < 1000000:
 		return   # old or repeated
 	_last_frame_other = f

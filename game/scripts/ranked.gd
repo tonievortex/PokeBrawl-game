@@ -18,6 +18,7 @@ const SAVE := "user://ranked.json"
 const POLL := 1.0
 const HOST_WAIT := 45.0       # the host waits this long for its rival to connect
 const JOIN_DELAY := 3.0       # the guest waits for the host's port to open
+const RELAY_JOIN_DELAY := 1.0 # through the relay there is no port to wait for
 const JOIN_TRY := 12.0        # one connection attempt
 const JOIN_TOTAL := 45.0
 const REPORT_EVERY := 3.0     # asking again until the other side's report is in
@@ -39,6 +40,7 @@ var opponent := {}
 var starting := false         # Ranked itself is (re)opening the room: not a "leave"
 
 var _match := {}              # the backend's answer for the match in progress
+var _relay_cfg := {}          # {host, port, match_id, token} when the fight goes through the relay
 var _live := false            # a match is in progress and not settled on our side
 var _started := false         # the battle began (leaving is a loss from then on)
 var _t := 0.0
@@ -184,7 +186,22 @@ func search() -> void:
 	result = {}
 	_fails = 0
 	_poll_t = POLL
-	_call(HTTPClient.METHOD_POST, "/queue/join", {"version": Menu.version()}, _on_ticket)
+	_call(HTTPClient.METHOD_POST, "/queue/join", _join_body(), _on_ticket)
+
+
+## What the backend is told when joining the queue: the game version (only the same one
+## meets) and this computer's home-network addresses (for two players on one router).
+func _join_body() -> Dictionary:
+	return {"version": Menu.version(), "local": Net.local_ips()}
+
+
+## Who hosts and, for the guest, where it joins (for the screen).
+func match_role() -> String:
+	return str(_match.get("role", ""))
+
+
+func match_host_ip() -> String:
+	return str(_match.get("host_ip", ""))
 
 
 ## Leaves the queue, or cancels the match being set up.
@@ -214,11 +231,15 @@ func _on_ticket(code: int, d: Dictionary) -> void:
 			in_queue = int(d.get("in_queue", 0))
 		"idle":
 			# The backend dropped the ticket (it was not asked for in time): ask again.
-			_call(HTTPClient.METHOD_POST, "/queue/join", {"version": Menu.version()}, _on_ticket)
+			_call(HTTPClient.METHOD_POST, "/queue/join", _join_body(), _on_ticket)
 
 
 func _begin_match(d: Dictionary) -> void:
 	_match = d
+	_relay_cfg = {}
+	if d.get("mode", "") == "relay" and d.get("relay") is Dictionary:
+		# Through the ranking server's relay: nobody has to open a port.
+		_relay_cfg = {"host": _server_host(), "port": int(d.relay.port), "match_id": int(d.match_id), "token": str(d.relay.token)}
 	opponent = d.get("opponent", {})
 	_live = true
 	_room = true
@@ -232,10 +253,31 @@ func _begin_match(d: Dictionary) -> void:
 
 func _open_room(as_host: bool, ip: String) -> void:
 	starting = true
-	var err: String = main.start_net(as_host, ip)
+	var err: String = main.start_net(as_host, ip, "", _relay_cfg)
 	starting = false
 	if err != "":
 		abort(err)
+
+
+## The ranking server's address without the scheme and port (the relay is on the same one).
+func _server_host() -> String:
+	var rest := server.get_slice("//", 1) if server.contains("//") else server
+	return rest.get_slice("/", 0).get_slice(":", 0)
+
+
+## "relay" (the fight goes through the ranking server) or "direct" (straight between players).
+func match_mode() -> String:
+	return "relay" if not _relay_cfg.is_empty() else "direct"
+
+
+## Through the relay: whether the server has answered this player yet.
+func relay_ok() -> bool:
+	return main.net != null and main.net.relay_registered()
+
+
+## Seconds since the rival was found.
+func connecting_for() -> float:
+	return _t
 
 
 # ---------------------------------------------------------------- the match
@@ -258,7 +300,7 @@ func _process(delta: float) -> void:
 			elif _match.role == "host":
 				if _t > HOST_WAIT:
 					abort(tr("Your rival could not connect."))
-			elif not _joined and _t >= JOIN_DELAY:
+			elif not _joined and _t >= (RELAY_JOIN_DELAY if not _relay_cfg.is_empty() else JOIN_DELAY):
 				_joined = true
 				_join_at = _t
 				_open_room(false, str(_match.host_ip))

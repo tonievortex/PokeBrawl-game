@@ -195,7 +195,7 @@ func _tile_art(id: String, x: float, y: float, w: float, _hgt: float, o: float) 
 			u.title(_tile_x(x, y + 120.0) + w - 50.0, y + 30.0, m.ip, 90.0, Color(1, 1, 1, 0.14), 1, w - 120.0)
 		"ranked":
 			var rating = m.main.ranked.me.get("rating", "")
-			u.title(_tile_x(x, y + 150.0) + w - 50.0, y + 30.0, str(rating) if rating != "" else "RATED", 150.0, Color(1, 1, 1, 0.16), 1)
+			u.title(_tile_x(x, y + 150.0) + w - 50.0, y + 30.0, str(int(rating)) if rating != "" else "RATED", 150.0, Color(1, 1, 1, 0.16), 1)
 
 
 func _credits() -> void:
@@ -252,7 +252,7 @@ func _ranked() -> void:
 	u.text(220.0, 205.0, tr("TRAINER"), 24.0, UiKit.SOFT, u.bold)
 	u.title(220.0, 235.0, str(r.me.get("name", "...")), 64.0, UiKit.INK, -1, 620.0)
 	u.text(220.0, 335.0, tr("RATING"), 24.0, UiKit.SOFT, u.bold)
-	u.title(220.0, 360.0, str(r.me.get("rating", "----")), 140.0, UiKit.YELLOW, -1, 620.0)
+	u.title(220.0, 360.0, str(int(r.me.rating)) if r.me.has("rating") else "----", 140.0, UiKit.YELLOW, -1, 620.0)
 	if not r.me.is_empty():
 		var rank: int = int(r.me.get("rank", 0))
 		var line := tr("%d wins, %d losses") % [int(r.me.wins), int(r.me.losses)]
@@ -284,11 +284,28 @@ func _ranked() -> void:
 				zone("ranked", 0, 150.0, y, 760.0, 110.0)
 				u.title(530.0, y + 22.0, tr("FIND MATCH"), 64.0, UiKit.INK, 0, 700.0)
 		"searching":
-			_card(150.0, y, 760.0, [tr("Searching for a rival") + dots, tr("%d s") % int(r.waited),
-				tr("%d player(s) in the queue") % r.in_queue], UiKit.ORANGE)
+			var crowd := tr("%d players are searching") % r.in_queue if r.in_queue > 1 else tr("You are the only one searching: another player has to look for a match too.")
+			_card(150.0, y, 760.0, [tr("Searching for a rival") + dots, tr("%d s") % int(r.waited), crowd], UiKit.ORANGE)
 		"connecting":
-			_card(150.0, y, 760.0, [tr("Rival found: %s (%d)") % [str(r.opponent.get("name", "?")), int(r.opponent.get("rating", 0))],
-				tr("Connecting") + dots], UiKit.GREEN)
+			var rival := str(r.opponent.get("name", "?"))
+			var lines2: Array = [tr("Rival found: %s (%d)") % [rival, int(r.opponent.get("rating", 0))]]
+			var net: Net = m.main.net
+			if r.match_mode() == "relay":
+				# Through the ranking server: nothing to open anywhere.
+				lines2.append(tr("Connecting through the PokeBrawl server") + dots)
+				if r.connecting_for() > 6.0 and not r.relay_ok():
+					lines2.append("!" + tr("The game server does not answer on UDP: its UDP port may be closed."))
+			elif r.match_role() == "host":
+				lines2.append(tr("Waiting for %s to connect") % rival + dots)
+				if net and net.upnp_testing:
+					lines2.append(tr("Opening port 7777 on the router") + dots)
+				elif net and net.upnp_ok:
+					lines2.append(tr("Port 7777 open on the router."))
+				else:
+					lines2.append("!" + tr("The router did not open port 7777 (UDP): your rival may not be able to connect."))
+			else:
+				lines2.append(tr("Joining %s") % r.match_host_ip() + dots)
+			_card(150.0, y, 760.0, lines2, UiKit.GREEN)
 		"playing":
 			_card(150.0, y, 760.0, [tr("Connected. Pick your Pokémon.")], UiKit.GREEN)
 	var lines: Array = []
