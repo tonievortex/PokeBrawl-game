@@ -105,6 +105,13 @@ func _ready() -> void:
 				[10.7, "menu_accept", ""], [11.0, "", "moves_ability"], [11.3, "menu_extra", ""], [11.6, "", "moves_restore_ask"],
 				[11.8, "menu_accept", ""], [12.2, "menu_extra", ""], [12.4, "move_right", ""], [12.6, "menu_accept", ""],
 				[13.0, "", "moves_restored"]]
+		"menu_nick":
+			# The first-time nickname window (forced: tests skip it otherwise): the empty
+			# window, Q W E with the pad, then up to the last row and Done: the main menu.
+			_plan = [[1.5, "", ""], [1.7, "menu_accept", ""], [2.4, "", "nick_window"], [2.6, "menu_accept", ""],
+				[2.8, "move_right", ""], [3.0, "menu_accept", ""], [3.2, "move_right", ""], [3.4, "menu_accept", ""],
+				[3.7, "", "nick_typed"], [3.9, "move_up", ""], [4.1, "move_right", ""], [4.3, "move_right", ""],
+				[4.5, "", "nick_done_key"], [4.7, "menu_accept", ""], [5.5, "", "nick_main"]]
 		"menu_profile":
 			# Profile: up from Online to the badge, in; point at another trainer (it must not
 			# change yet), confirm it; up to the name, the on-screen keyboard with the pad:
@@ -212,7 +219,7 @@ func _capture(n: String) -> void:
 func _physics_process(delta: float) -> void:
 	t += delta
 	match test_name:
-		"menu", "menu_moves", "menu_options", "menu_profile", "menu_wheel":
+		"menu", "menu_moves", "menu_options", "menu_profile", "menu_wheel", "menu_nick":
 			# Due steps go into a queue that _process plays one per few frames: after a slow
 			# frame several come due at once, and two presses in one frame lose one.
 			for p in _plan:
@@ -226,6 +233,14 @@ func _physics_process(delta: float) -> void:
 				get_tree().quit()
 			if test_name == "menu_options" and t > 6.8:
 				get_tree().quit()
+			if test_name == "menu_nick":
+				Controls.last_device = "xbox"
+				if t >= 5.7 and t - delta < 5.7:
+					var n: String = main.options.player_name
+					print("%s  Nickname typed with the pad: Q W E  '%s'" % ["OK   " if n == "QWE" else "FAIL ", n])
+					print("%s  Done goes on to the main menu  %s" % ["OK   " if main.menu.screen == "main" else "FAIL ", main.menu.screen])
+				if t > 6.2:
+					get_tree().quit()
 			if test_name == "menu_wheel":
 				if t >= 3.6 and t - delta < 3.6:
 					_profile_trainer = str(main.options.cursor)

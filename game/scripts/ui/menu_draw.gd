@@ -8,7 +8,8 @@ extends RefCounted
 ## block so nothing spills out.
 
 const ITEM_COLOR := {"combat": UiKit.RED, "online": UiKit.GREEN, "training": UiKit.ORANGE, "moves": UiKit.BLUE,
-	"options": UiKit.GREY, "quit": Color("3a3a42"), "profile": Color("6a4bb8"), "create": UiKit.GREEN, "join": UiKit.BLUE, "back": UiKit.GREY}
+	"options": UiKit.GREY, "quit": Color("3a3a42"), "profile": Color("6a4bb8"), "create": UiKit.GREEN, "join": UiKit.BLUE, "back": UiKit.GREY,
+	"ranked": UiKit.ORANGE}
 ## Tiles of the main menu and the online menu: [x, y, w, h] in the 1920 × 1080 space.
 ## Tiles of the main menu and the online menu: [x, y, w, h] in the 1920 × 1080 space, x
 ## measured on the wall's base line (TILE_BASE). All their sides lean on that same line, so
@@ -66,6 +67,8 @@ func draw(h: Hud) -> void:
 	match m.screen:
 		"title":
 			_title()
+		"nick":
+			_nick()
 		"main":
 			_header(tr("Menu"), ITEM_COLOR.get(Menu.MAIN_MENU[m.cursor][0], UiKit.RED))
 			_tiles(Menu.MAIN_MENU, MAIN_TILES)
@@ -78,6 +81,8 @@ func draw(h: Hud) -> void:
 			u.hints([[Controls.glyph("jump"), tr("Select")], [Controls.glyph("menu_back"), tr("Back")]])
 		"waiting":
 			_waiting()
+		"ranked":
+			_ranked()
 		"connecting":
 			_header(tr("Connecting"), UiKit.GREEN)
 			_card(160.0, 220.0, 1000.0, [tr("Joining %s:7777") % m.ip + ".".repeat(int(_t * 2.0) % 4)], UiKit.GREEN)
@@ -188,6 +193,9 @@ func _tile_art(id: String, x: float, y: float, w: float, _hgt: float, o: float) 
 			u.title(_tile_x(x, y + 150.0) + w - 50.0, y + 30.0, "7777", 120.0, Color(1, 1, 1, 0.12), 1)
 		"join":
 			u.title(_tile_x(x, y + 120.0) + w - 50.0, y + 30.0, m.ip, 90.0, Color(1, 1, 1, 0.14), 1, w - 120.0)
+		"ranked":
+			var rating = m.main.ranked.me.get("rating", "")
+			u.title(_tile_x(x, y + 150.0) + w - 50.0, y + 30.0, str(rating) if rating != "" else "RATED", 150.0, Color(1, 1, 1, 0.16), 1)
 
 
 func _credits() -> void:
@@ -230,6 +238,96 @@ func _waiting() -> void:
 		lines.append("!" + tr("The router did not open the port: open it (UDP 7777) or use Radmin VPN or ZeroTier."))
 	_card(160.0, 200.0, 1200.0, lines, UiKit.GREEN)
 	u.hints([[Controls.glyph("menu_back"), tr("Back")]])
+
+
+## Ranked: your rating and place on the left, the top of the ranking on the right, and
+## under your card the button to look for a rival (or how the search is going).
+func _ranked() -> void:
+	var r: Ranked = m.main.ranked
+	_header(tr("Ranked"), UiKit.ORANGE)
+	var dots := ".".repeat(int(_t * 2.0) % 4)
+	# Your card.
+	u.slant(150.0, 180.0, 760.0, 430.0, UiKit.PANEL, UiKit.TALL)
+	u.slant(150.0, 180.0, 14.0, 430.0, UiKit.ORANGE, UiKit.TALL)
+	u.text(220.0, 205.0, tr("TRAINER"), 24.0, UiKit.SOFT, u.bold)
+	u.title(220.0, 235.0, str(r.me.get("name", "...")), 64.0, UiKit.INK, -1, 620.0)
+	u.text(220.0, 335.0, tr("RATING"), 24.0, UiKit.SOFT, u.bold)
+	u.title(220.0, 360.0, str(r.me.get("rating", "----")), 140.0, UiKit.YELLOW, -1, 620.0)
+	if not r.me.is_empty():
+		var rank: int = int(r.me.get("rank", 0))
+		var line := tr("%d wins, %d losses") % [int(r.me.wins), int(r.me.losses)]
+		if rank > 0 and int(r.me.wins) + int(r.me.losses) > 0:
+			line = tr("Rank %d") % rank + "   " + line
+		u.text_fit(220.0, 540.0, line, 640.0, 30.0, UiKit.INK, u.bold)
+	# The ranking.
+	u.slant(950.0, 180.0, 830.0, 640.0, UiKit.PANEL, UiKit.TALL)
+	u.slant(950.0, 180.0, 14.0, 640.0, UiKit.YELLOW, UiKit.TALL)
+	u.text(1020.0, 200.0, tr("TOP PLAYERS"), 24.0, UiKit.SOFT, u.bold)
+	if r.board.is_empty():
+		u.text(1020.0, 270.0, tr("Nobody has played a ranked match yet."), 28.0, UiKit.SOFT, u.bold)
+	for i in mini(r.board.size(), 10):
+		var p: Dictionary = r.board[i]
+		var ry := 245.0 + i * 55.0
+		if int(p.get("id", -1)) == int(r.me.get("id", -2)):
+			u.rect(990.0, ry - 4.0, 760.0, 48.0, Color(UiKit.ORANGE, 0.3))
+		u.text(1020.0, ry, "%d" % int(p.rank), 30.0, UiKit.SOFT, u.heavy)
+		u.text_fit(1100.0, ry, str(p.name), 430.0, 30.0, UiKit.INK, u.bold)
+		u.text(1730.0, ry, str(int(p.rating)), 30.0, UiKit.YELLOW, u.heavy, 1)
+	# The action.
+	var y := 650.0
+	match r.state:
+		"idle":
+			if r.loading:
+				_card(150.0, y, 760.0, [tr("Connecting to the ranking server") + dots], UiKit.ORANGE)
+			elif r.can_search():
+				u.slant(150.0, y, 760.0, 110.0, UiKit.ORANGE.lerp(UiKit.YELLOW, 0.2 * (0.5 + 0.5 * sin(_t * TAU * 0.6))))
+				zone("ranked", 0, 150.0, y, 760.0, 110.0)
+				u.title(530.0, y + 22.0, tr("FIND MATCH"), 64.0, UiKit.INK, 0, 700.0)
+		"searching":
+			_card(150.0, y, 760.0, [tr("Searching for a rival") + dots, tr("%d s") % int(r.waited),
+				tr("%d player(s) in the queue") % r.in_queue], UiKit.ORANGE)
+		"connecting":
+			_card(150.0, y, 760.0, [tr("Rival found: %s (%d)") % [str(r.opponent.get("name", "?")), int(r.opponent.get("rating", 0))],
+				tr("Connecting") + dots], UiKit.GREEN)
+		"playing":
+			_card(150.0, y, 760.0, [tr("Connected. Pick your Pokémon.")], UiKit.GREEN)
+	var lines: Array = []
+	if not r.result.is_empty() and r.state == "idle":
+		lines.append((tr("Victory") if r.result.won else tr("Defeat")) + "   " + ("%+d" % int(r.result.delta)))
+	if r.notice != "" and r.state == "idle":
+		lines.append(r.notice)
+	if not lines.is_empty():
+		# Under the button when there is one, otherwise where the status card would be.
+		_card(150.0, 780.0 if r.can_search() else y, 760.0, lines,
+			UiKit.RED if r.notice.begins_with("!") else UiKit.GREEN)
+	if r.state == "idle":
+		u.hints([[Controls.glyph("jump"), tr("Find match") if r.can_search() else tr("Retry")], [Controls.glyph("menu_back"), tr("Back")]])
+	else:
+		u.hints([[Controls.glyph("menu_back"), tr("Cancel")]])
+
+
+## The window asked the first time: type your nickname and that is all. The keyboard of the
+## Profile screen is under it (keyboard, pad and mouse all work).
+func _nick() -> void:
+	var col := UiKit.YELLOW
+	_header(tr("Welcome"), UiKit.RED)
+	var opt: Settings = m.main.options
+	var x := 425.0
+	u.slant(x, 170.0, 1070.0, 170.0, UiKit.PANEL, UiKit.TALL)
+	u.slant(x, 170.0, 14.0, 170.0, col, UiKit.TALL)
+	u.text(u.edge(x, 170.0, 170.0, 190.0, UiKit.TALL) + 44.0, 188.0, tr("CHOOSE YOUR NICKNAME"), 24.0, UiKit.SOFT, u.bold)
+	var name: String = opt.player_name
+	var ty := 228.0
+	var tx := u.edge(x, 170.0, 170.0, ty + 60.0, UiKit.TALL) + 44.0
+	u.title(tx, ty, name, 72.0, UiKit.INK, -1, 960.0)
+	var cw := u.width(name, 72.0, u.heavy)
+	u.rect(tx + 10.0 + cw, ty + 76.0, 36.0, 8.0, Color(UiKit.YELLOW, 0.6 + 0.4 * sin(_t * TAU * 0.9)))
+	if m.message != "":
+		u.text_fit(x + 30.0, 352.0, m.message, 1000.0, 26.0, UiKit.RED.lightened(0.25), u.bold)
+	else:
+		u.text_fit(x + 30.0, 352.0, tr("Other players will see it. Enter to continue; you can change it later in Profile."), 1000.0, 24.0, UiKit.SOFT, u.bold)
+	_name_keyboard(col, x, 420.0)
+	u.hints([[Controls.glyph("jump"), tr("Press")], [Controls.glyph("menu_back"), tr("Delete")]])
 
 
 func _join() -> void:
@@ -277,7 +375,9 @@ func _selection() -> void:
 		title = tr("Pick the rival")
 	elif m.sel_phase == "setup":
 		title = tr("Get ready")
-	_header(title, _side_color(1 if m.sel_phase == "p2" else 0))
+	_header(title, UiKit.ORANGE if m.ranked_room() else _side_color(1 if m.sel_phase == "p2" else 0))
+	if m.ranked_room():
+		_ranked_banner()
 	# The stage, always at hand: its picture and name, top right.
 	var st: String = m.choice.stage
 	u.slant(1500.0, 30.0, 360.0, 92.0, UiKit.DARK)
@@ -308,6 +408,24 @@ func _selection() -> void:
 		u.slant(70.0, 960.0, ww + 60.0, 48.0, UiKit.RED)
 		u.text_fit(100.0, 970.0, warn, 1300.0, 26.0, UiKit.INK, u.bold)
 	u.hints(items)
+
+
+## The strip between the title and the stage in a ranked match: who plays whom, with their
+## ratings.
+func _ranked_banner() -> void:
+	var r: Ranked = m.main.ranked
+	var bx := 800.0
+	var bw := 640.0
+	u.slant(bx, 30.0, bw, 92.0, UiKit.DARK)
+	u.slant(bx + bw, 30.0, 16.0, 92.0, UiKit.ORANGE)
+	var ex := u.edge(bx, 30.0, 92.0, 70.0)
+	u.text(ex + 22.0, 36.0, tr("RANKED"), 18.0, UiKit.ORANGE, u.heavy)
+	var mid := ex + bw * 0.5
+	u.title(mid - 44.0, 50.0, str(r.me.get("name", "")).to_upper(), 36.0, UiKit.INK, 1, 250.0)
+	u.text(mid - 44.0, 92.0, str(int(r.me.get("rating", 0))), 22.0, UiKit.YELLOW, u.heavy, 1)
+	u.title(mid, 52.0, "VS", 30.0, UiKit.ORANGE, 0)
+	u.title(mid + 44.0, 50.0, str(r.opponent.get("name", "")).to_upper(), 36.0, UiKit.INK, -1, 250.0)
+	u.text(mid + 44.0, 92.0, str(int(r.opponent.get("rating", 0))), 22.0, UiKit.YELLOW, u.heavy)
 
 
 ## The wall of portraits: one row of ten, no gaps. The highlighted one lights up in the
@@ -421,8 +539,16 @@ func _player_card(side: int) -> void:
 	u.slant(x + 16.0, y + 16.0, w - 32.0, hgt - 32.0, col.darkened(0.3))
 	u.stripes(x + 30.0, y + 16.0, w - 60.0, hgt - 32.0, Color(1, 1, 1, 0.035), 44.0)
 	var tag := "1P" if left else ("2P" if m.online else "CPU")
+	# A ranked match names both players (their nicknames) and shows their rating.
+	var ranked: bool = m.ranked_room()
+	var who: Dictionary = {}
+	if ranked:
+		who = m.main.ranked.me if left else m.main.ranked.opponent
+		tag = str(who.get("name", tag)).to_upper()
+	var tsize := 44.0 if ranked else 56.0
+	var tmax := 330.0 if ranked else 0.0
 	if not left and m.online and m.rival_choice_id == "":
-		u.title(u.edge(x, y, hgt, y + 90.0) + 30.0, y + 26.0, tag, 64.0, Color(UiKit.INK, 0.9))
+		u.title(u.edge(x, y, hgt, y + 90.0) + 30.0, y + 26.0, tag, 64.0, Color(UiKit.INK, 0.9), -1, 520.0 if ranked else 0.0)
 		u.title(u.edge(x, y, hgt, y + 330.0) + 30.0, y + 250.0, tr("Choosing...").to_upper(), 80.0, Color(UiKit.INK, 0.6), -1, w - 120.0)
 		return
 	var sp: String = m.choice.p1 if left else m.choice.p2
@@ -430,8 +556,16 @@ func _player_card(side: int) -> void:
 	# The Pokémon, on the left half, a little over the card's top edge.
 	u.tex(m.render("card%d" % side, sp, Vector2i(440, 520), 0.5 if left else -0.5), u.edge(x, y, hgt, y + 300.0) + 10.0, y - 60.0, 440.0, 520.0)
 	var tag_x := u.edge(x, y, hgt, y + 92.0) + 20.0
-	u.slant(tag_x, y + 22.0, u.width(tag, 56.0, u.heavy) + 44.0, 70.0, UiKit.DARK)
-	u.title(tag_x + 22.0, y + 28.0, tag, 56.0, UiKit.INK)
+	var tag_w := u.width(tag, tsize, u.heavy)
+	if tmax > 0.0:
+		tag_w = minf(tag_w, tmax)
+	u.slant(tag_x, y + 22.0, tag_w + 44.0, 70.0, UiKit.DARK)
+	u.title(tag_x + 22.0, y + 28.0 + (6.0 if ranked else 0.0), tag, tsize, UiKit.INK, -1, tmax)
+	if ranked:
+		var rt := "%d  %s" % [int(who.get("rating", 0)), tr("RATING")]
+		var rw2 := u.width(rt, 22.0, u.heavy) + 36.0
+		u.slant(u.edge(x, y, hgt, y + 126.0) + 20.0, y + 98.0, rw2, 36.0, Color(0, 0, 0, 0.55))
+		u.text(u.edge(x, y, hgt, y + 126.0) + 38.0, y + 103.0, rt, 22.0, UiKit.YELLOW, u.heavy)
 	# Right half: ability and moves, each in its own strip, stepping along the diagonal.
 	var rw := 300.0
 	var lo := _loadout(side)
@@ -820,9 +954,7 @@ func zone_at(pos: Vector2) -> Dictionary:
 
 
 ## The on-screen keyboard for the name, under it (in place of the trainers while editing).
-func _name_keyboard(col: Color) -> void:
-	var x0 := 780.0
-	var y0 := 320.0
+func _name_keyboard(col: Color, x0 := 780.0, y0 := 320.0) -> void:
 	var kw := 98.0
 	var kh := 92.0
 	var gap := 9.0

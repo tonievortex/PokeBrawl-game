@@ -26,6 +26,7 @@ var menu: Menu
 var ai: AI
 var player_ai: AI               # only with --aivsai (tests)
 var net: Net                     # online only
+var ranked: Ranked               # the ranking backend's client (idle until the Ranked screen is used)
 var fighters: Array = []
 var trainers: Array = []          # Trainer of each fighter, same order (only for show)
 ## The opening: each trainer throws their Poké Ball and their Pokémon comes out; nobody
@@ -103,6 +104,9 @@ func _ready() -> void:
 	hud = Hud.new()
 	hud.main = self
 	add_child(hud)
+	ranked = Ranked.new()
+	ranked.main = self
+	add_child(ranked)
 	menu = Menu.new()
 	menu.main = self
 	menu.choice.stage = arena.stage
@@ -211,6 +215,8 @@ func start_battle(p1: String, p2: String, diff: String, rival_loadout := {}, riv
 	_place_trainers([mine, rival_trainer if net and rival_trainer != "" else TrainerData.rival_for(mine, p2)])
 	_introduce()
 	session.battle_started(p1, p2, arena.stage, net != null, ("host" if net.host else "guest") if net else mode)
+	if net:
+		ranked.battle_started()
 	if _args.has("weather"):
 		weather.start(_args.weather)          # tests: --weather=sun|rain|sand|snow
 
@@ -378,6 +384,9 @@ func rematch() -> void:
 	_end_t = -1.0
 	Engine.time_scale = 1.0
 	_introduce()
+	# A ranked rematch is a new ranked match: the server is told it started.
+	if net:
+		ranked.battle_started()
 
 
 func _on_defeat(who: Fighter) -> void:
@@ -396,6 +405,8 @@ func _on_defeat(who: Fighter) -> void:
 	trainer_react(winner, "win")
 	trainer_react(who, "lose")
 	session.battle_ended(winner.species + (" (me)" if winner == player else ""), [int(fighters[0].hp), int(fighters[1].hp)])
+	if net:
+		ranked.battle_ended(winner == player)
 
 
 # ---------------------------------------------------------------- online
@@ -432,6 +443,8 @@ func start_net(as_host: bool, ip: String, species := "") -> String:
 
 
 func close_net() -> void:
+	if ranked:
+		ranked.on_room_closed()
 	if net:
 		net.close()
 		net.queue_free()
@@ -527,6 +540,12 @@ func _net_event(d: Dictionary) -> void:
 				net.remote.stages[d.stat] = int(d.stages)
 		"rematch":
 			rematch()
+		"rm_ask":
+			ranked.on_rematch_ask()
+		"rm_yes":
+			ranked.on_rematch_yes()
+		"rm_no":
+			ranked.on_rematch_no()
 		"asks_rematch":
 			if net.host and _end_t > 1.0:
 				_vote_rematch(str(d.get("id", "guest")))
@@ -596,6 +615,9 @@ func _to_selection(warn: bool) -> void:
 
 func _disconnection(reason: String) -> void:
 	session.event("disconnected", {"reason": reason})
+	# Before leaving the battle (back_to_menu would count it as mine): in a ranked match
+	# whoever stays wins.
+	ranked.on_disconnect(reason)
 	hud.log_entry(reason)
 	push_warning(reason)
 	if net:
@@ -669,12 +691,16 @@ func _unhandled_input(ev: InputEvent) -> void:
 		ai.mode = "still" if ai.mode == "active" else "active"
 		ai.me.ctrl.move_input = Vector2.ZERO
 	if _end_t > CHOICES_AT and ev.is_action_pressed("jump"):
-		if net == null:
+		if ranked.in_ranked_room():
+			_ranked_result_key(true)
+		elif net == null:
 			rematch()
 		else:
 			_vote_rematch(net.me)
 	elif _end_t > CHOICES_AT and ev.is_action_pressed("menu_back"):
-		if net:
+		if ranked.in_ranked_room():
+			_ranked_result_key(false)
+		elif net:
 			_to_selection(true)
 		else:
 			back_to_menu()
@@ -692,6 +718,11 @@ func portraits(p1: String, p2: String) -> void:
 ## Nobody chose on the result screen: back to the selection (online the host takes both,
 ## still connected; the guest waits for it).
 func _leave_result() -> void:
+	if ranked.in_ranked_room():
+		# A rematch being asked keeps the screen (it has its own time limit).
+		if ranked.rematch == "":
+			_leave_ranked()
+		return
 	if net:
 		if net.host:
 			_to_selection(true)
@@ -699,10 +730,34 @@ func _leave_result() -> void:
 	back_to_menu("selection")
 
 
+## A ranked match is over: out of its room, back to the Ranked screen (the rating is there).
+func _leave_ranked() -> void:
+	back_to_menu("ranked")
+
+
+## The result screen's keys in a ranked room. A: the loser asks for a rematch, the other
+## accepts one that was asked, otherwise leave. B: decline, cancel the request or leave.
+func _ranked_result_key(accept: bool) -> void:
+	match ranked.rematch:
+		"asked":
+			ranked.answer_rematch(accept)
+		"asking":
+			if not accept:
+				_leave_ranked()
+		"starting":
+			pass
+		_:
+			if accept and ranked.can_ask_rematch():
+				ranked.ask_rematch()
+			else:
+				_leave_ranked()
+
+
 ## Leaves the battle and returns to the menu with the last picks ("screen": which one).
 func back_to_menu(screen := "") -> void:
 	session.event("back_to_menu", {"online": net != null, "battle_over": _end_t >= 0.0})
 	if net:
+		ranked.on_leave(_end_t >= 0.0)
 		net.close()
 		net.queue_free()
 		net = null

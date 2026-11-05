@@ -24,11 +24,27 @@ var _battles: Array = []
 var _end := ""
 var _states_at_start := 0     # net.states_applied when the battle started
 var _last := {}                # HP and state of the last battle frame
+## --ranked: instead of host/join, both press Ranked and let the backend pair them (it
+## also decides who hosts: "role" is taken from it). One battle; then the rating result
+## the backend sent back is checked. Needs the backend and --ranked_server=URL
+## --ranked_account=a|b (a file of its own for each copy on the same computer).
+## --scenario=accept (default): the loser asks for a rematch, the winner accepts, a second
+## ranked battle is played and both leave to the Ranked screen.
+## --scenario=decline: the winner declines: the loser must land on the Ranked screen with
+## "declined" on it, the winner too.
+var _ranked := false
+var _ranked_done := false
+var _scenario := "accept"
+var _rm_count := 0            # ranked battles finished in this room
+var _rm_sent := false         # the key of the current step was pressed
+var _rm_old := 0              # match number of the battle that just ended
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	role = main._args.get("role", "host")
+	_ranked = main._args.has("ranked")
+	_scenario = str(main._args.get("scenario", "accept"))
 
 
 func _step(text: String) -> void:
@@ -66,8 +82,13 @@ func _capture(n: String) -> void:
 
 func _physics_process(delta: float) -> void:
 	_t += delta
-	if _t > 150.0:
+	if _t > (260.0 if _ranked else 150.0):
 		_finish("timed out at: " + str(_steps.back() if not _steps.is_empty() else "start"))
+		return
+	if _ranked_done:
+		_wait_t -= delta
+		if _wait_t <= 0.0:
+			_ranked_after()
 		return
 	_wait_t -= delta
 	if _wait_t > 0.0:
@@ -88,6 +109,10 @@ func _menu(m: Menu) -> void:
 			_step("main")
 			_go_to(m, m.MAIN_MENU, "online")
 		"online":
+			if _ranked:
+				_step("online: going to Ranked")
+				_go_to(m, m.ONLINE, "ranked")
+				return
 			if _combat_t >= 0.0:
 				_round_end()
 			if _round >= 2:
@@ -97,7 +122,10 @@ func _menu(m: Menu) -> void:
 				_finish("" if m.message != "" else "no disconnect notice")
 				return
 			_step("online")
-			_go_to(m, m.ONLINE, "create" if role == "host" else "join")
+			if role == "host":
+				_go_to(m, m.ONLINE, "create")
+			else:
+				m._go("join")        # joining by IP is not on the menu any more: straight to its screen
 		"waiting":
 			_step("waiting for the guest")
 			if m._t > 6.0:
@@ -117,7 +145,14 @@ func _menu(m: Menu) -> void:
 			_wait_t = 0.5
 		"connecting":
 			_step("connecting")
+		"ranked":
+			var rk: Ranked = main.ranked
+			_step("ranked screen: %s (%s)" % [rk.state, str(rk.me.get("name", "no account yet"))])
+			if rk.state == "searching":
+				_capture("ranked_search")
 		"selection":
+			if _ranked and main.ranked.is_active():
+				role = main.ranked._match.role      # the backend decided who hosts
 			if _combat_t >= 0.0:
 				# The other one went back to selection before the end was seen here.
 				_round_end()
@@ -178,12 +213,13 @@ func _combat(delta: float) -> void:
 		_combat_t = 0.0
 		_step("battle %d: me %s, rival %s, ping %d ms" % [_round + 1, l.species, r.species, net.ping_ms()])
 		_states_at_start = net.states_applied
-		var expected: Array = [CHOOSES[role][_round], CHOOSES["guest" if role == "host" else "host"][_round]]
+		var ridx := 0 if _ranked else _round      # a ranked rematch keeps the same Pokémon
+		var expected: Array = [CHOOSES[role][ridx], CHOOSES["guest" if role == "host" else "host"][ridx]]
 		if [l.species, r.species] != expected:
 			_finish("species swapped: %s, expected %s" % [[l.species, r.species], expected])
 			return
 		# Both play on the stage the host picked.
-		var want_stage := "floating" if _round == 1 else "night"
+		var want_stage := "floating" if (_round == 1 and not _ranked) else "night"
 		_step("stage %s" % main.arena.stage)
 		# Each side's moves: the rival's must be what it saved (it sends them with its choice).
 		_step("moves: me %s, rival %s" % [",".join(l.data.moves), ",".join(r.data.moves)])
@@ -204,6 +240,12 @@ func _combat(delta: float) -> void:
 		return
 	if main._end_t > main.CHOICES_AT + 0.3:
 		_round_end()
+		if _ranked:
+			_ranked_done = true
+			_rm_count += 1
+			_rm_sent = false
+			_wait_t = 0.5
+			return
 		if role == "host":
 			if _round == 1:
 				_press("menu_back")          # both go back to pick
@@ -214,6 +256,45 @@ func _combat(delta: float) -> void:
 			_wait_t = 1.0
 	elif _combat_t > 60.0:
 		_finish("battle %d does not end" % (_round + 1))
+
+
+## Ranked, after a battle: wait for the rating, then play the scenario's steps (see the top).
+func _ranked_after() -> void:
+	var r: Ranked = main.ranked
+	var m: Menu = main.menu
+	# Out of the room already (the other one declined or left): the Ranked screen.
+	if main.net == null:
+		if m.is_open and m.screen == "ranked":
+			_step("on the Ranked screen: \"%s\"" % r.notice)
+			_capture("ranked_after")
+			_finish("")
+		return
+	if r.result.is_empty() or not r._pending.is_empty():
+		return          # the backend has not settled this match yet
+	_step("ranked result: %s (battle %d)" % [JSON.stringify(r.result), _rm_count])
+	if _rm_count >= 2:
+		# The second battle is over: both leave with B.
+		if not _rm_sent:
+			_rm_sent = true
+			_capture("ranked_result_2")
+			_press("menu_back")
+		return
+	_rm_old = r._last_id
+	if not bool(r.result.get("won", false)):
+		if not _rm_sent and r.can_ask_rematch():
+			_rm_sent = true
+			_capture("rematch_ask")
+			_press("jump")
+	elif r.rematch == "asked" and not _rm_sent:
+		_rm_sent = true
+		_capture("rematch_prompt")
+		_press("jump" if _scenario == "accept" else "menu_back")
+	# Accepted: the new battle began (same room, a new match number).
+	if _scenario == "accept" and r._live and int(r._match.get("match_id", 0)) != _rm_old and main._end_t < 0.0:
+		_step("rematch started: match %d" % int(r._match.match_id))
+		_ranked_done = false
+		_combat_t = -1.0
+		_rm_sent = false
 
 
 func _round_end() -> void:
@@ -230,5 +311,10 @@ func _finish(error: String) -> void:
 		return
 	_end = "ok" if error == "" else error
 	var data := {"role": role, "result": _end, "battles": _battles, "steps": _steps.size()}
+	if _ranked:
+		data["ranked"] = main.ranked.result
+		data["screen"] = main.menu.screen
+		data["notice"] = main.ranked.notice
+		data["played"] = _rm_count
 	print("MENU_NET_FINAL ", JSON.stringify(data))
 	get_tree().create_timer(0.5, true, false, true).timeout.connect(func(): get_tree().quit())

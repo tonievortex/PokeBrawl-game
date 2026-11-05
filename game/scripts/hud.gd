@@ -597,14 +597,35 @@ func _result_screen(_gw: float, _gh: float) -> void:
 		return
 	var k2 := UiKit.ease((main._end_t - main.CHOICES_AT) / 0.3)
 	var online: bool = main.net != null
+	var ranked: bool = main.ranked.in_ranked_room()
 	var opts := [
 		[Controls.glyph("jump"), tr("Rematch"), tr("Same Pokémon, for both players.") if online else tr("Same Pokémon, same rival."), UiKit.YELLOW],
 		[Controls.glyph("menu_back"), tr("Pick other Pokémon") if online else tr("Back to the menu"),
 			tr("Both go back to the selection, still connected.") if online else tr("Pick Pokémon, rival and stage again."), UiKit.PANEL_HI],
 	]
-	for i in 2:
+	if ranked:
+		# Each ranked match stands alone. The loser may ask for a rematch (a new ranked match,
+		# if the rival accepts); whoever is asked answers; otherwise the way out is the
+		# Ranked screen.
+		var rival := str(main.ranked.opponent.get("name", tr("Your rival")))
+		var back := [Controls.glyph("menu_back"), tr("Back to Ranked"), tr("Your rating and the ranking are updated by the server."), UiKit.PANEL_HI]
+		match main.ranked.rematch:
+			"asked":
+				opts = [[Controls.glyph("jump"), tr("Accept rematch"), tr("%s wants a rematch: a new ranked match.") % rival, UiKit.GREEN],
+					[Controls.glyph("menu_back"), tr("Decline"), tr("%s will be told, and you go back to Ranked.") % rival, UiKit.RED]]
+			"asking":
+				opts = [["...", tr("Waiting"), tr("Waiting for %s to answer...") % rival, UiKit.YELLOW],
+					[Controls.glyph("menu_back"), tr("Cancel"), tr("Leave and go back to Ranked."), UiKit.PANEL_HI]]
+			"starting":
+				opts = [["...", tr("Rematch"), tr("Starting..."), UiKit.GREEN]]
+			_:
+				if main.ranked.can_ask_rematch():
+					opts = [[Controls.glyph("jump"), tr("Rematch"), tr("Ask %s for a rematch. It is a new ranked match.") % rival, UiKit.YELLOW], back]
+				else:
+					opts = [[Controls.glyph("jump"), tr("Back to Ranked"), tr("Your rating and the ranking are updated by the server."), UiKit.ORANGE]]
+	for i in opts.size():
 		var o: Array = opts[i]
-		var x := 300.0 + i * 700.0 + (1.0 - k2) * 200.0
+		var x := (650.0 if opts.size() == 1 else 300.0 + i * 700.0) + (1.0 - k2) * 200.0
 		var y := 600.0
 		u.slant(x, y, 620.0, 180.0, Color(o[3], k2))
 		var ink := UiKit.DARK if i == 0 else UiKit.INK
@@ -613,18 +634,28 @@ func _result_screen(_gw: float, _gh: float) -> void:
 		u.text(x + 50.0 + gw * 0.5, y + 36.0, o[0], 30.0, Color(UiKit.INK if i == 0 else UiKit.DARK, k2), u.heavy, 0)
 		u.title(x + 70.0 + gw, y + 26.0, o[1].to_upper(), 52.0, Color(ink, k2), -1, 600.0 - gw - 110.0)
 		u.para(x + 54.0, y + 100.0, o[2], 520.0, 24.0, Color(ink, 0.8 * k2), u.bold, 1.25, 2)
+	# Ranked: the rating change as soon as the server has both results.
+	if ranked:
+		var rr: Dictionary = main.ranked.result
+		var line := tr("Updating your rating...")
+		var col2 := Color(UiKit.SOFT, k2)
+		if not rr.is_empty():
+			line = tr("Rating %+d  (now %d)") % [int(rr.delta), int(main.ranked.me.get("rating", 0))]
+			col2 = Color(UiKit.YELLOW if int(rr.delta) >= 0 else UiKit.SOFT, k2)
+		u.text(960.0, 790.0, line, 34.0, col2, u.heavy, 0)
 	# Online: who has asked for the rematch so far.
-	if online and not main.rematch_votes.is_empty():
+	if online and not ranked and not main.rematch_votes.is_empty():
 		var mine: bool = main.rematch_votes.has(main.net.me)
 		var n: int = main.rematch_votes.size()
 		var of: int = maxi(main.rematch_of, main.net.players())
 		var line := tr("Rematch: waiting for the rival (%d/%d)") % [n, of] if mine else tr("Your rival wants a rematch (%d/%d)") % [n, of]
 		u.text(960.0, 790.0, line, 26.0, Color(UiKit.YELLOW, k2), u.bold, 0)
 	# Nobody chooses: back to the selection on its own (online the host decides when).
-	if not online or main.net.host:
+	if not online or main.net.host or ranked:
 		var left := int(ceilf(main.CHOICES_AT + main.AUTO_LEAVE - main._end_t))
-		if left <= 10:
-			u.text(960.0, 820.0, tr("Back to the selection in %d s") % maxi(left, 0), 24.0, Color(UiKit.SOFT, k2), u.bold, 0)
+		if left <= 10 and not (ranked and main.ranked.rematch != ""):
+			var back_text := tr("Back to Ranked in %d s") if ranked else tr("Back to the selection in %d s")
+			u.text(960.0, 850.0 if ranked else 820.0, back_text % maxi(left, 0), 24.0, Color(UiKit.SOFT, k2), u.bold, 0)
 
 
 # ---------------------------------------------------------------- menu

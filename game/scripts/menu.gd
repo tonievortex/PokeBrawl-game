@@ -34,11 +34,13 @@ const MAIN_MENU := [["combat", "Battle", "Against the AI. Pick your Pokémon, th
 	["quit", "Quit", "Close the game."],
 	["profile", "Profile", "Your trainer and your name. Online, your rival sees them."]]
 const ONLINE := [["create", "Host game", "Your friend joins with your IP. Port 7777 (UDP)."],
-	["join", "Join", "Type the IP of whoever hosted the game."],
+	["ranked", "Ranked", "Rated 1 vs 1 against other players: it looks for a rival right away. The server keeps your rating and the ranking."],
 	["back", "Back", ""]]
 const IP_CHARS := "0123456789."
 ## The profile's name: up to NAME_MAX of these (with the pad, each letter goes round them).
 const NAME_MAX := 12
+## The nickname asked for the first time: at least this many characters.
+const NICK_MIN := 3
 const NAME_CHARS := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_."
 const PROFILE_COLUMNS := 3
 ## The on-screen keyboard for the name (pad and mouse; the real keyboard types directly):
@@ -162,6 +164,11 @@ func _go(p: String) -> void:
 	elif p == "profile":
 		name_edit = false
 		profile_cursor = TrainerData.ids().find(main.options.trainer)
+	elif p == "nick":
+		# The first-time window: the name is being typed from the start.
+		name_edit = true
+		name_key = Vector2i.ZERO
+		message = ""
 	elif p == "moves":
 		edit_phase = "pokemon"
 		var list := pokemon_list()
@@ -169,6 +176,8 @@ func _go(p: String) -> void:
 		edit_sp = list[cursor]
 	elif p != "vs":
 		_free_renders()
+	if p == "ranked":
+		main.ranked.open()
 
 
 ## Online: once connected, both go on to pick.
@@ -187,7 +196,8 @@ func online_connected() -> void:
 func disconnected(reason: String) -> void:
 	online = false
 	message = reason
-	open_menu("online")
+	# A ranked match that ended with the rival leaving: the result is on the Ranked screen.
+	open_menu("ranked" if main.ranked.consume_return() else "online")
 
 
 # ---------------------------------------------------------------- input
@@ -235,7 +245,11 @@ func _menu_frame(delta: float) -> void:
 		"title":
 			if _accept():
 				_sound("ok")
-				_go("main")
+				# The first time (no nickname yet) it asks for one; tests skip it unless --force_nick.
+				var skip: bool = has_nickname() or (main._args.has("test") and not main._args.has("force_nick"))
+				_go("main" if skip else "nick")
+		"nick":
+			_name_keyboard()
 		"main":
 			_move_nav(MAIN_NAV)
 			if _accept():
@@ -276,9 +290,14 @@ func _menu_frame(delta: float) -> void:
 						_key = Vector2i.ZERO
 					"back":
 						_go("main")
+					"ranked":
+						message = ""
+						_go("ranked")
 			elif _pressed("menu_back"):
 				_sound("back")
 				_go("main")
+		"ranked":
+			_ranked_input()
 		"waiting", "connecting":
 			if _pressed("menu_back"):
 				_sound("back")
@@ -333,6 +352,41 @@ func _confirm_input() -> void:
 	elif _pressed("menu_back"):
 		_sound("back")
 		confirm = {}
+
+
+# ---------------------------------------------------------------- ranked
+
+## The Ranked screen: it looks for a rival by itself when it opens. B cancels the search
+## and goes back; if nothing is going on (an error, a finished match), A looks again.
+func _ranked_input() -> void:
+	var r: Ranked = main.ranked
+	match r.state:
+		"idle":
+			if _accept() and r.can_search():
+				_sound("ok")
+				r.search()
+			elif _accept() and not r.loading:
+				_sound("ok")
+				r.open()                    # no account yet / server unreachable: try again
+			elif _pressed("menu_back"):
+				_sound("back")
+				r.notice = ""
+				_go("online")
+		"searching":
+			if _pressed("menu_back"):
+				_sound("back")
+				r.cancel()
+				r.notice = ""
+				_go("online")
+		"connecting":
+			if _pressed("menu_back"):
+				_sound("back")
+				r.cancel()
+
+
+## Whether the online room open now is a ranked match's (its selection shows both players).
+func ranked_room() -> bool:
+	return online and main.ranked.in_ranked_room()
 
 
 # ---------------------------------------------------------------- IP
@@ -418,7 +472,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 	if is_open and screen == "options":
 		main.options.menu_event(self, ev)
 		return
-	if is_open and screen == "profile" and name_edit and ev is InputEventKey and ev.pressed:
+	if is_open and screen in ["profile", "nick"] and name_edit and ev is InputEventKey and ev.pressed:
 		_type_name(ev)
 		get_viewport().set_input_as_handled()
 		return
@@ -695,10 +749,26 @@ func _type_name(k: InputEventKey) -> void:
 
 
 func _end_name() -> void:
-	name_edit = false
 	main.options.player_name = main.options.player_name.strip_edges()
+	if screen == "nick":
+		# The first-time window needs a real name (the ranking's accounts are 3+ characters).
+		if main.options.player_name.length() < NICK_MIN:
+			message = tr("Your nickname needs at least %d characters.") % NICK_MIN
+			_sound("back")
+			return
+		name_edit = false
+		main.options.save()
+		_sound("ok")
+		_go("main")
+		return
+	name_edit = false
 	main.options.save()
 	_sound("ok")
+
+
+## Whether the player has already chosen a nickname.
+func has_nickname() -> bool:
+	return main.options.player_name.strip_edges().length() >= NICK_MIN
 
 
 func _cycle_stage(step: int) -> void:
