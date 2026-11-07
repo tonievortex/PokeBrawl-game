@@ -51,6 +51,14 @@ var server_down := false      # the ranking server does not answer: nothing onli
 var _hb_t := 1.0
 var _hb_fails := 0
 var _hb_busy := false
+var recent: Array = []        # players I played with (the friends list), most recent first
+var recent_loading := false
+var invites: Array = []       # invitations to somebody's lobby waiting for my answer: {code, from, avatar}
+var invite_msg := ""          # how the last invitation went ("!" in front: a problem)
+var _inv_t := 0.0
+var _inv_busy := false
+var _party_creating := false
+var _party_try := 0.0
 var party := {}               # a 2 vs 2 lobby with a friend: {code, leader (am I), members: [{name, avatar, leader...}]}
 var _party_t := 0.0
 var _party_busy := false
@@ -502,17 +510,96 @@ func in_party_as_member() -> bool:
 	return not party.is_empty() and not bool(party.get("leader", true))
 
 
-## Opens a lobby: a code to give to a friend. Only a 2 vs 2 has one.
+## Opens a lobby: a code to give to a friend. Only a 2 vs 2 has one, and it always has one: it is made by itself
+## when the 2 vs 2 mode is chosen (see _keep_lobby).
 func party_create() -> void:
-	if not can_search():
+	if not can_search() or _party_creating:
 		return
 	team_pref = true
+	_party_creating = true
 	_call(HTTPClient.METHOD_POST, "/party/create", {"avatar": _avatar()}, func(code: int, d: Dictionary):
+		_party_creating = false
 		if code == 200 and d.get("status", "") == "party":
 			party = d
 			_party_t = 1.0
 		else:
+			_party_try = 3.0
 			notice = "!" + str(d.get("error", tr("Could not reach the ranking server."))))
+
+
+## In the 2 vs 2 mode, on the Ranked screen, the lobby is there without anybody asking for it (and with it its code).
+func _keep_lobby(delta: float) -> void:
+	if not team_pref or not party.is_empty() or _party_creating or state != "idle" or server_down or token == "":
+		return
+	if main.menu == null or not main.menu.is_open or not main.menu.screen in ["ranked", "friends", "room"]:
+		return
+	_party_try -= delta
+	if _party_try <= 0.0 and can_search():
+		party_create()
+
+
+# ---------------------------------------------------------------- friends (players I played with) and invitations
+
+func load_recent() -> void:
+	recent_loading = true
+	_call(HTTPClient.METHOD_GET, "/recent", {}, func(code: int, d: Dictionary):
+		recent_loading = false
+		if code == 200:
+			recent = d.get("players", [])
+		else:
+			invite_msg = "!" + tr("Could not reach the ranking server."))
+
+
+## The leader of the lobby invites a player of the list (they get the invitation on their Ranked screen or main menu).
+func invite_player(player_name: String) -> void:
+	if party.is_empty():
+		invite_msg = "!" + tr("Your lobby is being made: try again in a moment.")
+		party_create()
+		return
+	_call(HTTPClient.METHOD_POST, "/party/invite", {"name": player_name}, func(code: int, d: Dictionary):
+		if code == 200:
+			invite_msg = tr("Invitation sent to %s.") % player_name
+			if not bool(d.get("online", true)):
+				invite_msg += " " + tr("(offline now)")
+		else:
+			invite_msg = "!" + str(d.get("error", tr("Could not reach the ranking server."))))
+
+
+func _poll_invites(delta: float) -> void:
+	if token == "" or server_down or _inv_busy or not party.is_empty() or main.net != null or state != "idle":
+		return
+	if main.menu == null or not main.menu.is_open or not main.menu.screen in ["ranked", "main", "friends"]:
+		return
+	_inv_t -= delta
+	if _inv_t > 0.0:
+		return
+	_inv_t = 3.0
+	_inv_busy = true
+	_call(HTTPClient.METHOD_GET, "/invites", {}, func(code: int, d: Dictionary):
+		_inv_busy = false
+		if code == 200:
+			invites = d.get("invites", []))
+
+
+## Answers the first invitation: yes joins that lobby (as its member), no throws it away.
+func answer_invite(yes: bool) -> void:
+	if invites.is_empty():
+		return
+	var inv: Dictionary = invites.pop_front()
+	if yes:
+		party_join(str(inv.code), func(ok: bool, err: String):
+			if not ok:
+				invite_msg = "!" + err
+			else:
+				invites.clear()
+				if main.menu.is_open and main.menu.screen != "ranked":
+					main.menu._go("ranked"))
+	else:
+		_call(HTTPClient.METHOD_POST, "/invites/decline", {"code": str(inv.code)}, func(_c: int, _d: Dictionary): pass)
+
+
+## (Rest of the ranking client)
+
 
 
 ## Joins a friend's lobby by its code. done(ok: bool, error: String).
@@ -767,6 +854,8 @@ func _on_server_up() -> void:
 
 func _process(delta: float) -> void:
 	_heartbeat(delta)
+	_keep_lobby(delta)
+	_poll_invites(delta)
 	match state:
 		"searching":
 			waited += delta

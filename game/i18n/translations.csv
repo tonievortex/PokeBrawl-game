@@ -831,3 +831,18 @@ Dodge: it makes you untouchable for a moment.,Dodge: it makes you untouchable fo
 Hit your rival with a move.,Hit your rival with a move.,,Trafij rywala atakiem.
 Land a combo of three hits.,Land a combo of three hits.,,Zadaj combo z trzech trafień.
 "Ranked 1 vs 1, or 2 vs 2 with a friend. Ban and pick before every match; the server keeps your rating and the ranking.","Ranked 1 vs 1, or 2 vs 2 with a friend. Ban and pick before every match; the server keeps your rating and the ranking.",,Ranked 1v1 albo 2v2 ze znajomym. Bany i wybór przed każdym meczem; serwer pilnuje ratingu i rankingu.
+Friends,Friends,,Znajomi
+PLAYERS YOU HAVE PLAYED WITH,PLAYERS YOU HAVE PLAYED WITH,,"GRACZE, Z KTÓRYMI GRAŁEŚ"
+ONLINE,ONLINE,,ONLINE
+OFFLINE,OFFLINE,,OFFLINE
+Invite,Invite,,Zaproś
+Invitation sent to %s.,Invitation sent to %s.,,Zaproszenie wysłane do %s.
+(offline now),(offline now),,(jest offline)
+Your lobby is being made: try again in a moment.,Your lobby is being made: try again in a moment.,,Twoje lobby się tworzy: spróbuj za chwilę.
+%s invites you to a 2v2 lobby,%s invites you to a 2v2 lobby,,%s zaprasza cię do lobby 2v2
+Y  Join   N  Decline,Y  Join   N  Decline,,Y  Dołącz   N  Odrzuć
+You have not played with anybody yet: after a match the players show up here.,You have not played with anybody yet: after a match the players show up here.,,Nie grałeś jeszcze z nikim: po meczu gracze pojawią się tutaj.
+F8  JOIN A LOBBY,F8  JOIN A LOBBY,,F8  DOŁĄCZ DO LOBBY
+F4  INVITE A FRIEND (2 VS 2),F4  INVITE A FRIEND (2 VS 2),,F4  ZAPROŚ ZNAJOMEGO (2 VS 2)
+Join a lobby,Join a lobby,,Dołącz do lobby
+LOBBY CODE: %s   (a friend types it in Join a lobby),LOBBY CODE: %s   (a friend types it in Join a lobby),,KOD LOBBY: %s   (znajomy wpisuje go w „Dołącz do lobby”)

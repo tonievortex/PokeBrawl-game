@@ -82,6 +82,7 @@ var draft_my_ban := ""
 var draft_at := 0.0               # when the last state came (the countdown runs from then)
 var acc_gate := false              # the account screen is the start of the game: it cannot be skipped...
 var acc_offline_ok := false       # ...unless the server cannot be reached
+var friends_cursor := 0           # the friends list (players I played with)
 var lobby_avatar := ""            # the random Pokémon shown as me in the ranked lobby
 var team_picks := {}              # a 2 vs 2's selection: what each other slot has chosen {slot: {name, species, ready}}
 const ROOM_CHARS := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -327,6 +328,8 @@ func _menu_frame(delta: float) -> void:
 			_ranked_input()
 		"replays":
 			_replays_input()
+		"friends":
+			_friends_input()
 		"draft":
 			_draft_input()
 		"selection":
@@ -486,8 +489,40 @@ func _replays_input() -> void:
 		_go("ranked")
 
 
+## The list of players I have played with: pick one to invite to my 2 vs 2 lobby.
+func friends_open() -> void:
+	friends_cursor = 0
+	main.ranked.invite_msg = ""
+	if not main.ranked.team_pref:
+		main.ranked.team_pref = true
+	if main.ranked.party.is_empty():
+		main.ranked.party_create()
+	main.ranked.load_recent()
+	_go("friends")
+
+
+func _friends_input() -> void:
+	var r: Ranked = main.ranked
+	if _pressed("menu_back"):
+		_sound("back")
+		_go("ranked")
+		return
+	var n := r.recent.size()
+	if n == 0:
+		return
+	if _pressed("move_up"):
+		friends_cursor = (friends_cursor + n - 1) % n
+		_sound("move")
+	elif _pressed("move_down"):
+		friends_cursor = (friends_cursor + 1) % n
+		_sound("move")
+	if _accept():
+		_sound("ok")
+		r.invite_player(str(r.recent[friends_cursor].get("name", "")))
+
+
 func room_open() -> void:
-	room_focus = 0
+	room_focus = 1
 	room_input = ""
 	room_msg = ""
 	room_busy = false
@@ -503,13 +538,9 @@ func _room_key(k: InputEventKey) -> void:
 			main.ranked.skip_auto = true
 			_go("ranked")
 		KEY_TAB, KEY_LEFT, KEY_RIGHT:
-			room_focus = 1 - room_focus
-			_sound("move")
+			room_focus = 1
 		KEY_ENTER, KEY_KP_ENTER:
-			if room_focus == 0:
-				_room_create()
-			else:
-				_room_join()
+			_room_join()
 		KEY_BACKSPACE:
 			room_input = room_input.substr(0, room_input.length() - 1)
 			room_focus = 1
@@ -781,12 +812,14 @@ func _ranked_input() -> void:
 			elif _pressed("menu_back"):
 				_sound("back")
 				r.notice = ""
+				r.party_leave()
 				_go("main")
 		"searching":
 			if _pressed("menu_back"):
 				_sound("back")
 				r.cancel()
 				r.notice = ""
+				r.party_leave()
 				_go("main")
 		"connecting":
 			if _pressed("menu_back"):
@@ -825,13 +858,22 @@ func _unhandled_input(ev: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 	if is_open and screen == "ranked" and ev is InputEventKey and ev.pressed and not ev.echo and ev.keycode == KEY_F4 \
+			and main.ranked.state == "idle" and main.ranked.can_search() and not main.ranked.in_party_as_member():
+		friends_open()
+		return
+	if is_open and screen == "ranked" and ev is InputEventKey and ev.pressed and not ev.echo and ev.keycode == KEY_F8 \
 			and main.ranked.state == "idle" and main.ranked.can_search():
 		room_open()
 		return
+	# An invitation to somebody's lobby: Y joins it, N throws it away (on the main menu and the Ranked screens).
+	if is_open and screen in ["main", "ranked", "friends"] and ev is InputEventKey and ev.pressed and not ev.echo \
+			and ev.keycode in [KEY_Y, KEY_N] and not main.ranked.invites.is_empty() and main.ranked.state == "idle":
+		main.ranked.answer_invite(ev.keycode == KEY_Y)
+		_sound("ok" if ev.keycode == KEY_Y else "back")
+		return
 	if is_open and screen == "ranked" and ev is InputEventKey and ev.pressed and not ev.echo and ev.keycode == KEY_F5 \
 			and main.ranked.state == "idle" and not main.ranked.party.is_empty():
-		main.ranked.party_leave()
-		_sound("back")
+		_leave_lobby()
 		return
 	if is_open and screen == "ranked" and ev is InputEventKey and ev.pressed and not ev.echo and ev.keycode in [KEY_F6, KEY_F7] \
 			and main.ranked.state == "idle" and main.ranked.can_search():
@@ -1275,6 +1317,13 @@ func version_mismatch() -> bool:
 	return rival_version != "" and rival_version != Menu.version()
 
 
+## Out of the 2 vs 2 lobby (the friend is told): back to the ranked 1 vs 1, where the lobby is only me.
+func _leave_lobby() -> void:
+	main.ranked.team_pref = false
+	main.ranked.party_leave()
+	_sound("back")
+
+
 ## The lobby's mode: a ranked 1 vs 1 (alone in the lobby) or a ranked 2 vs 2 (a friend can join). Every ranked
 ## match has a draft, so that is not a choice.
 func _set_mode(team: bool) -> void:
@@ -1284,6 +1333,8 @@ func _set_mode(team: bool) -> void:
 	r.team_pref = team
 	if not team:
 		r.party_leave()           # a 1 vs 1 lobby is only you
+	else:
+		r.party_create()          # a 2 vs 2 lobby, with its code, from the first moment
 	_sound("move")
 
 
@@ -1499,12 +1550,23 @@ func _mouse(ev: InputEvent) -> void:
 			"logout":
 				_ask_logout()
 			"friend":
+				if not main.ranked.in_party_as_member():
+					friends_open()
+			"join_lobby":
 				room_open()
+			"friendrow":
+				if z.i < main.ranked.recent.size():
+					friends_cursor = z.i
+					_sound("ok")
+					main.ranked.invite_player(str(main.ranked.recent[z.i].get("name", "")))
+			"invite_yes":
+				main.ranked.answer_invite(true)
+			"invite_no":
+				main.ranked.answer_invite(false)
 			"modetab":
 				_set_mode(z.i == 1)
 			"leave_lobby":
-				main.ranked.party_leave()
-				_sound("back")
+				_leave_lobby()
 			"dpick":
 				var dl := pokemon_list()
 				if z.i < dl.size():

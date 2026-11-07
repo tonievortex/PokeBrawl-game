@@ -71,6 +71,8 @@ func draw(h: Hud) -> void:
 			_room()
 		"replays":
 			_replays()
+		"friends":
+			_friends()
 		"draft":
 			_draft()
 		"main":
@@ -91,8 +93,54 @@ func draw(h: Hud) -> void:
 			_profile()
 		"vs":
 			_vs()
+	if m.screen in ["main", "ranked", "friends"] and not m.main.ranked.invites.is_empty() and m.main.ranked.state == "idle":
+		_invite_banner()
 	if not m.confirm.is_empty():
 		_confirm()
+
+
+## An invitation to somebody's lobby, top right: Y joins, N throws it away (the buttons click too).
+func _invite_banner() -> void:
+	var inv: Dictionary = m.main.ranked.invites[0]
+	u.slant(700.0, 28.0, 1150.0, 96.0, Color(UiKit.BLUE, 0.95))
+	u.text_fit(750.0, 38.0, tr("%s invites you to a 2v2 lobby") % str(inv.get("from", "?")), 760.0, 34.0, UiKit.INK, u.heavy)
+	u.text(750.0, 80.0, tr("Y  Join   N  Decline"), 24.0, Color(UiKit.INK, 0.9), u.bold)
+	u.slant(1500.0, 44.0, 150.0, 60.0, UiKit.GREEN)
+	zone("invite_yes", 0, 1500.0, 44.0, 150.0, 60.0)
+	u.title(1575.0, 54.0, "Y", 44.0, UiKit.DARK, 0, 100.0)
+	u.slant(1670.0, 44.0, 150.0, 60.0, UiKit.RED)
+	zone("invite_no", 0, 1670.0, 44.0, 150.0, 60.0)
+	u.title(1745.0, 54.0, "N", 44.0, UiKit.INK, 0, 100.0)
+
+
+## The players I have played with: pick one to invite.
+func _friends() -> void:
+	_header(tr("Friends"), UiKit.BLUE)
+	var r: Ranked = m.main.ranked
+	var dots := ".".repeat(int(_t * 2.0) % 4)
+	u.text(150.0, 150.0, tr("PLAYERS YOU HAVE PLAYED WITH"), 24.0, UiKit.SOFT, u.bold)
+	if r.recent_loading:
+		_card(150.0, 280.0, 1000.0, [tr("Loading") + dots], UiKit.BLUE)
+	elif r.recent.is_empty():
+		_card(150.0, 280.0, 1400.0, [tr("You have not played with anybody yet: after a match the players show up here.")], UiKit.BLUE)
+	for i in mini(r.recent.size(), 9):
+		var p: Dictionary = r.recent[i]
+		var ry := 200.0 + i * 66.0
+		var here: bool = i == m.friends_cursor
+		var o := on("fr%d" % i, here)
+		u.slant(150.0, ry, 1500.0, 58.0, UiKit.PANEL.lerp(UiKit.BLUE, 0.5 * o))
+		zone("friendrow", i, 150.0, ry, 1500.0, 58.0)
+		var online := bool(p.get("online", false))
+		u.rect(180.0, ry + 20.0, 18.0, 18.0, UiKit.GREEN if online else Color(UiKit.INK, 0.25))
+		u.text_fit(220.0, ry + 11.0, str(p.get("name", "?")), 640.0, 32.0, UiKit.INK, u.heavy)
+		var dv := str(p.get("division", ""))
+		if dv != "":
+			u.text(930.0, ry + 15.0, tr(dv), 24.0, DIVISION_COLOR.get(dv, UiKit.SOFT), u.heavy)
+		u.text(1180.0, ry + 15.0, str(int(p.get("rating", 0))), 28.0, UiKit.YELLOW, u.heavy, 1)
+		u.text(1620.0, ry + 15.0, tr("ONLINE") if online else tr("OFFLINE"), 24.0, UiKit.GREEN if online else UiKit.SOFT, u.heavy, 1)
+	if r.invite_msg != "":
+		_card(150.0, 830.0, 1500.0, [r.invite_msg], UiKit.RED if r.invite_msg.begins_with("!") else UiKit.GREEN)
+	u.hints([[Controls.glyph("jump"), tr("Invite")], [Controls.glyph("menu_back"), tr("Back")]])
 
 
 ## Black slanted block with the screen's name, a color edge sliding in with it.
@@ -264,7 +312,7 @@ func _ranked() -> void:
 				u.slant(150.0, y + 125.0, 760.0, 64.0, UiKit.PANEL_HI)
 				if r.party.is_empty():
 					zone("friend", 0, 150.0, y + 125.0, 760.0, 64.0)
-					u.text(530.0, y + 140.0, tr("F4  PLAY WITH A FRIEND (2 VS 2)"), 28.0, UiKit.INK, u.heavy, 0)
+					u.text(530.0, y + 140.0, tr("F4  INVITE A FRIEND (2 VS 2)"), 28.0, UiKit.INK, u.heavy, 0)
 				else:
 					zone("leave_lobby", 0, 150.0, y + 125.0, 760.0, 64.0)
 					u.text(530.0, y + 140.0, tr("F5  LEAVE THE LOBBY"), 28.0, UiKit.INK, u.heavy, 0)
@@ -272,6 +320,9 @@ func _ranked() -> void:
 					u.slant(150.0 + k * 390.0, y + 205.0, 370.0, 56.0, UiKit.PANEL_HI)
 					zone("replays", k, 150.0 + k * 390.0, y + 205.0, 370.0, 56.0)
 					u.text(335.0 + k * 390.0, y + 218.0, tr("F6  MY REPLAYS") if k == 0 else tr("F7  WATCH LIVE"), 24.0, UiKit.INK, u.heavy, 0)
+				u.slant(345.0, y + 275.0, 370.0, 56.0, UiKit.PANEL_HI)
+				zone("join_lobby", 0, 345.0, y + 275.0, 370.0, 56.0)
+				u.text(530.0, y + 288.0, tr("F8  JOIN A LOBBY"), 24.0, UiKit.INK, u.heavy, 0)
 		"searching":
 			var crowd := tr("%d players are searching") % r.in_queue if r.in_queue > 1 else tr("You are the only one searching: another player has to look for a match too.")
 			if r.room_code != "":
@@ -356,11 +407,11 @@ func _lobby_card(r: Ranked) -> void:
 	_player_slot(0, 200.0, me_name, m.lobby_avatar, int(r.me.get("rating", 0)), not r.party.is_empty() and bool(r.party.get("leader", false)))
 	if r.team_pref:
 		if friend.is_empty():
-			u.slant(540.0, 262.0, 320.0, 270.0, Color(UiKit.DARK, 0.5))
-			zone("friend", 0, 540.0, 262.0, 320.0, 270.0)
-			u.title(700.0, 330.0, "+", 110.0, Color(UiKit.INK, 0.35), 0, 300.0)
-			u.text(700.0, 450.0, tr("EMPTY"), 24.0, Color(UiKit.INK, 0.5), u.heavy, 0)
-			u.text(700.0, 484.0, tr("F4  INVITE A FRIEND"), 22.0, Color(UiKit.SOFT, 0.9), u.bold, 0)
+			u.slant(540.0, 258.0, 320.0, 232.0, Color(UiKit.DARK, 0.5))
+			zone("friend", 0, 540.0, 258.0, 320.0, 232.0)
+			u.title(700.0, 300.0, "+", 100.0, Color(UiKit.INK, 0.35), 0, 300.0)
+			u.text(700.0, 410.0, tr("EMPTY"), 22.0, Color(UiKit.INK, 0.5), u.heavy, 0)
+			u.text_fit(700.0, 442.0, tr("F4  INVITE A FRIEND"), 270.0, 22.0, Color(UiKit.SOFT, 0.9), u.bold, 0)
 		else:
 			var av := str(friend.get("avatar", ""))
 			if not Roster.POKEMON.has(av):
@@ -374,26 +425,26 @@ func _lobby_card(r: Ranked) -> void:
 		var line := tr("%d wins, %d losses") % [int(r.me.wins), int(r.me.losses)]
 		if rank > 0 and int(r.me.wins) + int(r.me.losses) > 0:
 			line = tr("Rank %d") % rank + "   " + line
-		u.text_fit(220.0, 545.0, line, 640.0, 26.0, UiKit.INK, u.bold)
+		u.text_fit(220.0, 515.0, line, 640.0, 26.0, UiKit.INK, u.bold)
 	if not r.party.is_empty():
-		u.text_fit(220.0, 580.0, tr("LOBBY CODE: %s   (your friend types it with F4, Join)") % str(r.party.get("code", "")), 650.0, 24.0, UiKit.YELLOW, u.heavy)
+		u.text_fit(220.0, 560.0, tr("LOBBY CODE: %s   (a friend types it in Join a lobby)") % str(r.party.get("code", "")), 650.0, 24.0, UiKit.YELLOW, u.heavy)
 	else:
 		var left: int = r.season_left()
 		if left >= 0:
 			var s: Dictionary = r.me.season
 			var when := tr("%d d %d h") % [left / 86400, left % 86400 / 3600] if left >= 86400 else tr("%d h %d min") % [left / 3600, left % 3600 / 60]
-			u.text_fit(220.0, 580.0, tr("Season %s ends in %s") % [str(s.get("name", "")), when], 650.0, 22.0, UiKit.SOFT, u.bold)
+			u.text_fit(220.0, 560.0, tr("Season %s ends in %s") % [str(s.get("name", "")), when], 650.0, 22.0, UiKit.SOFT, u.bold)
 
 
 ## One player of the lobby: a card with their Pokémon (3D) and their name under it.
 func _player_slot(i: int, x: float, who: String, species: String, rating: int, leader: bool) -> void:
-	u.slant(x, 262.0, 320.0, 270.0, Color(UiKit.DARK, 0.85))
+	u.slant(x, 258.0, 320.0, 232.0, Color(UiKit.DARK, 0.85))
 	if Roster.POKEMON.has(species):
-		u.tex(m.render("lobby%d" % i, species, Vector2i(300, 230), 0.5 if i == 0 else -0.5), x + 10.0, 266.0, 300.0, 230.0)
-	u.rect(x + 14.0, 496.0, 292.0, 3.0, Color(UiKit.ORANGE, 0.8))
-	u.text_fit(x + 24.0, 502.0, who.to_upper(), 270.0 if not leader else 200.0, 28.0, UiKit.INK, u.heavy)
+		u.tex(m.render("lobby%d" % i, species, Vector2i(300, 190), 0.5 if i == 0 else -0.5), x + 10.0, 262.0, 300.0, 190.0)
+	u.rect(x + 14.0, 452.0, 292.0, 3.0, Color(UiKit.ORANGE, 0.8))
+	u.text_fit(x + 24.0, 458.0, who.to_upper(), 250.0 if not leader else 190.0, 26.0, UiKit.INK, u.heavy)
 	if leader:
-		u.text(x + 300.0, 508.0, tr("LEADER"), 18.0, UiKit.YELLOW, u.heavy, 1)
+		u.text(x + 296.0, 463.0, tr("LEADER"), 16.0, UiKit.YELLOW, u.heavy, 1)
 
 
 ## Alone in a ranked 1 vs 1 lobby: the rating, its division and the way to the next one (while calibrating, the
@@ -562,38 +613,30 @@ func _replays() -> void:
 	u.hints([[Controls.glyph("jump"), tr("Watch")], [Controls.glyph("move_left"), tr("Mine / Live")], [Controls.glyph("menu_back"), tr("Back")]])
 
 
-## Friendly match: create a private room (you get a code) or join a friend's with their code.
-## Nobody's rating changes.
+## Join somebody's lobby by its code (a 2 vs 2 lobby's code is always there for its leader).
 func _room() -> void:
-	_header(tr("Play with a friend"), UiKit.BLUE)
+	_header(tr("Join a lobby"), UiKit.BLUE)
 	var y := 190.0
-	var o0 := on("room_create", m.room_focus == 0)
-	u.slant(150.0, y, 760.0, 430.0, UiKit.PANEL.lerp(UiKit.BLUE, 0.35 * o0), UiKit.TALL)
-	u.slant(150.0, y, 14.0, 430.0, UiKit.BLUE, UiKit.TALL)
-	zone("roomcreate", 0, 150.0, y, 760.0, 430.0)
-	u.text(220.0, y + 28.0, tr("RANKED 2 VS 2"), 24.0, UiKit.SOFT, u.bold)
-	u.title(530.0, y + 150.0, tr("OPEN A LOBBY"), 80.0, UiKit.INK, 0, 680.0)
-	u.text_fit(530.0, y + 280.0, tr("You get a code. Your friend types it here and you look for a 2 vs 2 together."), 660.0, 28.0, UiKit.SOFT, u.bold, 0)
-	var o1 := on("room_join", m.room_focus == 1)
-	u.slant(950.0, y, 830.0, 430.0, UiKit.PANEL.lerp(UiKit.BLUE, 0.35 * o1), UiKit.TALL)
-	u.slant(950.0, y, 14.0, 430.0, UiKit.BLUE, UiKit.TALL)
-	zone("roomcode", 0, 950.0, y, 830.0, 300.0)
-	u.text(1020.0, y + 28.0, tr("YOUR FRIEND GAVE YOU A CODE"), 24.0, UiKit.SOFT, u.bold)
+	var x0 := 545.0
+	u.slant(x0, y, 830.0, 430.0, UiKit.PANEL.lerp(UiKit.BLUE, 0.35), UiKit.TALL)
+	u.slant(x0, y, 14.0, 430.0, UiKit.BLUE, UiKit.TALL)
+	zone("roomcode", 0, x0, y, 830.0, 300.0)
+	u.text(x0 + 70.0, y + 28.0, tr("YOUR FRIEND GAVE YOU A CODE"), 24.0, UiKit.SOFT, u.bold)
 	for i in 5:
-		var cx := 1030.0 + i * 140.0
+		var cx := x0 + 80.0 + i * 140.0
 		var ch: String = m.room_input.substr(i, 1)
-		var here: bool = m.room_focus == 1 and i == mini(m.room_input.length(), 4)
+		var here: bool = i == mini(m.room_input.length(), 4)
 		u.slant(cx, y + 100.0, 120.0, 150.0, UiKit.DARK.lerp(UiKit.BLUE, 0.4 if here else 0.0))
 		u.title(cx + 60.0, y + 118.0, ch if ch != "" else "·", 100.0, UiKit.INK if ch != "" else Color(UiKit.INK, 0.25), 0, 110.0)
 	var ready: bool = m.room_input.length() == 5
-	u.slant(1030.0, y + 320.0, 700.0, 80.0, UiKit.BLUE if ready and not m.room_busy else UiKit.PANEL_HI)
-	zone("roomgo", 0, 1030.0, y + 320.0, 700.0, 80.0)
-	u.title(1380.0, y + 330.0, (tr("JOIN") if not m.room_busy else tr("WAIT") + ".".repeat(int(_t * 2.0) % 4)), 52.0, UiKit.INK, 0, 640.0)
+	u.slant(x0 + 80.0, y + 320.0, 700.0, 80.0, UiKit.BLUE if ready and not m.room_busy else UiKit.PANEL_HI)
+	zone("roomgo", 0, x0 + 80.0, y + 320.0, 700.0, 80.0)
+	u.title(x0 + 430.0, y + 330.0, (tr("JOIN") if not m.room_busy else tr("WAIT") + ".".repeat(int(_t * 2.0) % 4)), 52.0, UiKit.INK, 0, 640.0)
 	if m.room_msg != "":
 		_card(150.0, 660.0, 1630.0, ["!" + m.room_msg], UiKit.RED)
 	else:
 		u.text_fit(150.0, 665.0, tr("Two friends play as one team in a ranked 2 vs 2: the other two players are found for you. Both need the same version of the game."), 1630.0, 26.0, UiKit.SOFT, u.bold)
-	u.hints([[tr("Tab"), tr("Create / Code")], [tr("Enter"), tr("Go")], [tr("Esc"), tr("Back")]])
+	u.hints([[tr("Enter"), tr("Join")], [tr("Esc"), tr("Back")]])
 
 
 ## Log in, create an account (name, email, password) or, for an account made before logins

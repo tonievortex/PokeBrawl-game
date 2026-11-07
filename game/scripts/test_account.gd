@@ -134,6 +134,23 @@ func _run() -> void:
 	r._party_t = 1000.0
 	await _wait(0.5)
 	await _capture("lobby_2v2")
+	# The empty slot opens the list of players I played with; the code of the lobby is there from the start.
+	r.party = {"status": "party", "code": "K7PQ2", "leader": true, "queue": "idle", "members": [{"name": NAME, "leader": true, "avatar": "gengar", "rating": 1040}]}
+	await _wait(0.3)
+	await _capture("lobby_empty_slot")
+	m.friends_open()
+	await _wait(0.6)
+	_check(m.screen == "friends", "F4 / the empty slot opens the friends list (%s)" % m.screen)
+	r.recent = [{"name": "Misty", "rating": 1120, "division": "Gold", "online": true}, {"name": "Brock", "rating": 910, "division": "Bronze", "online": false}]
+	r.recent_loading = false
+	r.invite_msg = "Invitation sent to Misty."
+	await _wait(0.4)
+	await _capture("friends")
+	r.invites = [{"code": "ABCDE", "from": "Misty", "avatar": "lucario"}]
+	m._go("ranked")
+	await _wait(0.4)
+	await _capture("invite_banner")
+	r.invites = []
 	r.party = {}
 	r.team_pref = false
 	m.room_open()
