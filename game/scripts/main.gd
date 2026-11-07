@@ -61,6 +61,20 @@ var _arena_info := {}
 var forced_winner: Fighter
 var tutorial: Tutorial            # Training's lessons (see tutorial.gd); only in Training
 
+## Tests never touch the player's own saved files (settings, moves, login, tutorial): they use files of their own,
+## which start empty every run. Test accounts' login files (ranked_a123.json...) are cleared once they are an hour old.
+func _isolate_tests() -> void:
+	Settings.path = "user://settings_test.cfg"
+	Loadout.path = "user://loadouts_test.json"
+	Tutorial.done_file = "user://tutorial_done_test"
+	for f in ["settings_test.cfg", "loadouts_test.json", "tutorial_done_test", "ranked_test.json"]:
+		DirAccess.remove_absolute("user://" + f)
+	for f in DirAccess.get_files_at("user://"):
+		if f.begins_with("ranked_") and f.ends_with(".json") and f != "ranked_test.json":
+			if Time.get_unix_time_from_system() - FileAccess.get_modified_time("user://" + f) > 3600.0:
+				DirAccess.remove_absolute("user://" + f)
+
+
 func _ready() -> void:
 	session = SessionLog.new()
 	session.main = self
@@ -74,6 +88,8 @@ func _ready() -> void:
 		if a.begins_with("--"):
 			var parts := a.substr(2).split("=")
 			_args[parts[0]] = parts[1] if parts.size() > 1 else "1"
+	if _args.has("test"):
+		_isolate_tests()
 	# The language follows the system; --lang=en or --lang=es forces one.
 	if _args.has("lang"):
 		TranslationServer.set_locale(_args.lang)

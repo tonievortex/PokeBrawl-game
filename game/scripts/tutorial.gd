@@ -5,7 +5,7 @@ extends Node
 ## the end, then fights back. It starts by itself the first time Training is opened and F1 starts
 ## it again (or ends it).
 
-const DONE_FILE := "user://tutorial_done"
+static var done_file := "user://tutorial_done"
 ## text: what to do; keys: actions to name (their glyphs are shown); need: how it is ticked off.
 const STEPS := [
 	{"text": "Move around the stadium.", "keys": ["move_up", "move_left", "move_down", "move_right"], "need": "move"},
@@ -36,7 +36,7 @@ func _ready() -> void:
 
 ## Whether this player has been through it (or skipped it) before.
 static func done_before() -> bool:
-	return FileAccess.file_exists(DONE_FILE)
+	return FileAccess.file_exists(done_file)
 
 
 func start() -> void:
@@ -68,7 +68,7 @@ func toggle() -> void:
 
 
 func _mark_done() -> void:
-	var f := FileAccess.open(DONE_FILE, FileAccess.WRITE)
+	var f := FileAccess.open(done_file, FileAccess.WRITE)
 	if f:
 		f.store_string("1")
 

@@ -1960,7 +1960,7 @@ func _tutorial_test() -> void:
 	_ok("The rival fights back after it", main.ai.mode == "active")
 	_ok("It remembers it was done", Tutorial.done_before())
 	if not existed:
-		DirAccess.remove_absolute(Tutorial.DONE_FILE)
+		DirAccess.remove_absolute(Tutorial.done_file)
 	var fails := _results.filter(func(r): return not r[1]).size()
 	print("RESULT: %d of %d" % [_results.size() - fails, _results.size()])
 	get_tree().quit()

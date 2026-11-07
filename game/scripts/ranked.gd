@@ -106,6 +106,9 @@ func _ready() -> void:
 	# Tests run two copies on one computer: --ranked_account=a keeps its own account file.
 	if main and main._args.has("ranked_account"):
 		_save_path = "user://ranked_%s.json" % str(main._args.ranked_account)
+	# The tests have a login file of their own: they must never wipe the real player's (they once did).
+	if main and main._args.has("test") and not main._args.has("ranked_account"):
+		_save_path = "user://ranked_test.json"
 	var f := FileAccess.open(_save_path, FileAccess.READ)
 	if f:
 		var d = JSON.parse_string(f.get_as_text())

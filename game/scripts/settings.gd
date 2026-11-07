@@ -7,7 +7,8 @@ extends Node
 ## menu_event(). Tests start from the defaults and never save, so a player's settings
 ## never change what a test sees.
 
-const PATH := "user://settings.cfg"
+## (Static: the tests point it at a file of their own, so they never touch the player's real settings.)
+static var path := "user://settings.cfg"
 const ROWS := 12                     # rows shown at once on the screen (it scrolls)
 const BINDABLE := ["jump", "dodge", "lock_on", "mov1", "mov2", "mov3", "mov4", "descend", "pause"]
 const FPS_CAPS := [0, 60, 120, 144, 240]
@@ -39,7 +40,7 @@ func load_saved() -> void:
 		Audio.set_bus_volume("Music", music)
 		return
 	var cf := ConfigFile.new()
-	if cf.load(PATH) != OK:
+	if cf.load(path) != OK:
 		# No saved options yet: the defaults, volumes included, still go into effect.
 		Audio.set_bus_volume("SFX", sfx)
 		Audio.set_bus_volume("Music", music)
@@ -73,7 +74,7 @@ func save() -> void:
 	cf.set_value("screen", "vsync", vsync)
 	cf.set_value("screen", "fps_cap", fps_cap)
 	cf.set_value("controls", "bindings", bindings)
-	cf.save(PATH)
+	cf.save(path)
 
 
 ## Puts everything into effect. "screen" also sets the window (only when loading or when
