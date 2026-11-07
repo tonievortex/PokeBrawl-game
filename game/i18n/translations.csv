@@ -846,3 +846,4 @@ F8  JOIN A LOBBY,F8  JOIN A LOBBY,,F8  DOŁĄCZ DO LOBBY
 F4  INVITE A FRIEND (2 VS 2),F4  INVITE A FRIEND (2 VS 2),,F4  ZAPROŚ ZNAJOMEGO (2 VS 2)
 Join a lobby,Join a lobby,,Dołącz do lobby
 LOBBY CODE: %s   (a friend types it in Join a lobby),LOBBY CODE: %s   (a friend types it in Join a lobby),,KOD LOBBY: %s   (znajomy wpisuje go w „Dołącz do lobby”)
+Your first 10 matches decide your starting rating.,Your first 10 matches decide your starting rating.,,Pierwsze 10 meczów ustala twój startowy rating.

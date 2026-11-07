@@ -418,7 +418,7 @@ func _lobby_card(r: Ranked) -> void:
 				av = str(m.pokemon_list()[absi(hash(str(friend.get("name", "")))) % m.pokemon_list().size()])
 			_player_slot(1, 540.0, str(friend.get("name", "?")), av, int(friend.get("rating", 0)), bool(friend.get("leader", false)))
 	else:
-		_rating_mini(r, 560.0, 262.0)
+		_rating_mini(r, 625.0, 262.0)
 	# Under them: the stats, and the code of the lobby (or the season).
 	if not r.me.is_empty():
 		var rank: int = int(r.me.get("rank", 0))
@@ -455,20 +455,21 @@ func _rating_mini(r: Ranked, x: float, y: float) -> void:
 		return
 	if r.calibrating():
 		u.text(x, y + 10.0, tr("PLACEMENT"), 22.0, UiKit.SOFT, u.bold)
-		u.title(x, y + 40.0, "%d/%d" % [int(r.me.get("placement", 0)), int(r.me.get("placement_of", 10))], 110.0, UiKit.YELLOW, -1, 300.0)
+		u.title(x, y + 40.0, "%d/%d" % [int(r.me.get("placement", 0)), int(r.me.get("placement_of", 10))], 110.0, UiKit.YELLOW, -1, 240.0)
+		u.para(x, y + 160.0, tr("Your first 10 matches decide your starting rating."), 250.0, 20.0, UiKit.SOFT, u.bold, 1.2, 3)
 		return
 	var info = r.me.get("division_info")
 	var dname := str(r.me.get("division", ""))
 	var col: Color = DIVISION_COLOR.get(dname, UiKit.YELLOW)
 	u.text(x, y + 10.0, tr("RATING"), 22.0, UiKit.SOFT, u.bold)
-	u.slant(x + 130.0, y + 6.0, 170.0, 36.0, col)
-	u.text(x + 215.0, y + 11.0, tr(dname).to_upper(), 22.0, UiKit.DARK, u.heavy, 0)
-	u.title(x, y + 50.0, str(int(r.me.get("rating", 0))), 120.0, UiKit.YELLOW, -1, 300.0)
+	u.slant(x + 120.0, y + 6.0, 150.0, 36.0, col)
+	u.text(x + 195.0, y + 11.0, tr(dname).to_upper(), 22.0, UiKit.DARK, u.heavy, 0)
+	u.title(x, y + 50.0, str(int(r.me.get("rating", 0))), 120.0, UiKit.YELLOW, -1, 260.0)
 	if info is Dictionary and str(info.get("next", "")) != "":
 		var pr := float(info.get("progress", 0.0))
-		u.rect(x, y + 200.0, 300.0, 10.0, Color(UiKit.INK, 0.18))
-		u.rect(x, y + 200.0, 300.0 * pr, 10.0, col)
-		u.text_fit(x, y + 216.0, tr("%s at %d") % [tr(str(info.next)), int(info.next_at)], 300.0, 20.0, UiKit.SOFT, u.bold)
+		u.rect(x, y + 180.0, 255.0, 10.0, Color(UiKit.INK, 0.18))
+		u.rect(x, y + 180.0, 255.0 * pr, 10.0, col)
+		u.text_fit(x, y + 196.0, tr("%s at %d") % [tr(str(info.next)), int(info.next_at)], 255.0, 20.0, UiKit.SOFT, u.bold)
 
 
 ## The card's big number: the rating under a division badge and the way to the next division;

@@ -1279,6 +1279,9 @@ func back_to_menu(screen := "") -> void:
 	for l in fighters:
 		l.queue_free()
 	fighters.clear()
+	# A move that started in this very frame has made its effect after the clear above: the effects are cleared again
+	# once the Pokémon are really gone (they would call a freed Pokémon every frame).
+	vfx.clear.call_deferred()
 	player = null
 	combat.clear()
 	combat.targets = []

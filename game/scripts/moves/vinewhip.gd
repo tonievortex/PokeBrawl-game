@@ -30,7 +30,10 @@ func on_active() -> void:
 		var clock := {"t": 0.0}
 		var dur: float = d.active + 0.12
 		var vfx: Vfx = l.main.vfx
+		var last := [Vector3.ZERO, Vector3.ZERO]
 		vfx.ribbon(func():
+			if not is_instance_valid(l):
+				return last           # its Pokémon is gone (the match ended): the ribbon just fades where it was
 			clock.t += vfx.get_process_delta_time()
 			var k := clampf(clock.t / dur, 0.0, 1.0)
 			# Extends, reaches the end and returns, lashing from side to side.
@@ -38,7 +41,9 @@ func on_active() -> void:
 			var base := _root(side)
 			var dir := l.forward().rotated(Vector3.UP, side * (0.35 - k * 0.6))
 			var tip: Vector3 = base + dir * length + Vector3.DOWN * (l.data.height * 0.25 * k)
-			return [base, tip], col, dur, 0.12)
+			last[0] = base
+			last[1] = tip
+			return last, col, dur, 0.12)
 	play_sound("vinewhip", -2.0)
 
 
