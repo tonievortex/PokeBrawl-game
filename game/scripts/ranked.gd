@@ -36,7 +36,27 @@ var notice := ""              # last message for the screen ("!" in front: a pro
 var result := {}              # the last settled match: {won, delta}
 var waited := 0.0
 var in_queue := 0
+var busy := false             # a rival is found but the server has no free match server yet
+## Reporting the rival of the match that just ended (the result screen, F5, then 1 to 4).
+const REPORT_REASONS := ["cheating", "abuse", "leaving", "other"]
+var report_state := ""        # "", "choose", "target" (2 vs 2: which player), "sending", "sent" or "error"
+var report_msg := ""
+var _reported_match := 0
+var draft_pref := false       # look for a draft match (ban and pick) instead of a normal one (F8)
+var draft_match := false      # the match in progress is a draft
+var team_pref := false        # look for a 2 vs 2 (four players, two teams) instead of a 1 vs 1 (F10)
+var team_match := false       # the match in progress (or just played) is a 2 vs 2
+var room_players := 0         # a room waiting for its players: how many are in...
+var room_size := 2            # ...of how many (2, or 4 for a 2 vs 2)
+var allies: Array = []        # a 2 vs 2: my team-mate (public records: name, rating...)
+var enemies: Array = []       # ...and the two rivals
+var _report_reason := ""
+var _report_names: Array = [] # the players that can be reported after a 2 vs 2
+var room_code := ""           # a private room is open (waiting for a friend): its code
+var friendly := false         # the match in progress (or just played) is a private room's: no rating
 var opponent := {}
+var me_at := 0.0               # when `me` was fetched (the season's countdown runs from then)
+var last_name := ""           # the account name used last (the login screen offers it)
 var starting := false         # Ranked itself is (re)opening the room: not a "leave"
 
 var _match := {}              # the backend's answer for the match in progress
@@ -55,6 +75,9 @@ var _save_path := SAVE
 var skip_auto := false        # the next time the Ranked screen opens, do not search by itself
 var _auto := false            # the screen was just opened: search as soon as the account is ready
 var _room := false            # the room of a ranked match is (or was) open
+var _arena := false           # this match is run by the server (no reports, no rematch)
+var _arena_wait := {}         # after a server result: asking /me until the rating has moved
+const ARENA_CONNECT := 25.0   # the game server must answer within this long
 ## The rematch on the result screen: "" (none), "asking" (I asked, waiting for the answer),
 ## "asked" (my rival asked me), "starting" (accepted, the server is making the new match).
 var rematch := ""
@@ -64,6 +87,10 @@ var _last_won := false
 
 
 func _ready() -> void:
+	if main and main._args.has("draft"):
+		draft_pref = true
+	if main and main._args.has("team"):
+		team_pref = true
 	if main and main._args.has("ranked_server"):
 		server = str(main._args.ranked_server)
 	server = server.trim_suffix("/")
@@ -75,6 +102,7 @@ func _ready() -> void:
 		var d = JSON.parse_string(f.get_as_text())
 		if d is Dictionary and d.get("server", "") == server:
 			token = str(d.get("token", ""))
+			last_name = str(d.get("name", ""))
 
 
 # ---------------------------------------------------------------- the screen
@@ -92,6 +120,117 @@ func open() -> void:
 	else:
 		_refresh_me()
 	_refresh_board()
+
+
+## Whether there is an account to play with (the login screen comes first when not).
+func logged_in() -> bool:
+	return token != ""
+
+
+## Tests (--ranked_account=a) make their accounts by themselves instead of showing the screen.
+func auto_account() -> bool:
+	return main != null and main._args.has("ranked_account")
+
+
+## Seconds left of the season (counted down from when the server said how many).
+func season_left() -> int:
+	var s = me.get("season")
+	if not s is Dictionary:
+		return -1
+	return maxi(0, int(s.get("seconds_left", 0)) - int(Time.get_unix_time_from_system() - me_at))
+
+
+## Whether the rival of the match that just ended can be reported now.
+func can_report() -> bool:
+	return token != "" and _last_id > 0 and _reported_match != _last_id and report_state != "sent" and in_ranked_room()
+
+
+func report_open() -> void:
+	if can_report():
+		report_state = "choose"
+		report_msg = ""
+
+
+func report_send(i: int) -> void:
+	if report_state != "choose" or i < 0 or i >= REPORT_REASONS.size():
+		return
+	if team_match:
+		# A 2 vs 2: the reason first, then which of the other three players.
+		_report_reason = REPORT_REASONS[i]
+		report_state = "target"
+		return
+	_post_report({"match_id": _last_id, "reason": REPORT_REASONS[i]})
+
+
+## A 2 vs 2: the names that can be reported (the rivals first, then my team-mate).
+func report_targets() -> Array:
+	return _report_names
+
+
+func report_send_target(i: int) -> void:
+	if report_state != "target" or i < 0 or i >= _report_names.size():
+		return
+	_post_report({"match_id": _last_id, "reason": _report_reason, "target": str(_report_names[i])})
+
+
+func _post_report(body: Dictionary) -> void:
+	var mid: int = int(body.match_id)
+	report_state = "sending"
+	_call(HTTPClient.METHOD_POST, "/report", body, func(code: int, d: Dictionary):
+		if code == 200:
+			_reported_match = mid
+			report_state = "sent"
+		else:
+			report_state = "error"
+			report_msg = str(d.get("error", tr("Could not reach the ranking server."))))
+
+
+# ---------------------------------------------------------------- replays
+
+var replays: Array = []       # my latest matches that have a replay
+var live_matches: Array = []  # matches being played now
+var replays_loading := false
+
+
+## Loads the list: live=false the player's own replays, live=true the matches on now.
+func load_replays(live: bool) -> void:
+	replays_loading = true
+	_call(HTTPClient.METHOD_GET, "/live" if live else "/replays", {}, func(code: int, d: Dictionary):
+		replays_loading = false
+		if code == 200:
+			if live:
+				live_matches = d.get("matches", [])
+			else:
+				replays = d.get("replays", [])
+		else:
+			notice = "!" + tr("Could not reach the ranking server."))
+
+
+## A piece of a replay file from `offset`: done(code, headers (lower-case names), body).
+func fetch_replay(match_id: int, offset: int, done: Callable) -> void:
+	var req := HTTPRequest.new()
+	req.timeout = 15.0
+	add_child(req)
+	var headers := PackedStringArray(["Authorization: Bearer " + token])
+	if req.request("%s/replay/%d?from=%d" % [server, match_id, offset], headers, HTTPClient.METHOD_GET) != OK:
+		req.queue_free()
+		done.call(0, {}, PackedByteArray())
+		return
+	req.request_completed.connect(func(res: int, code: int, hs: PackedStringArray, body: PackedByteArray):
+		req.queue_free()
+		if res != HTTPRequest.RESULT_SUCCESS:
+			done.call(0, {}, PackedByteArray())
+			return
+		var out := {}
+		for h in hs:
+			var at := h.find(":")
+			if at > 0:
+				out[h.substr(0, at).strip_edges().to_lower()] = h.substr(at + 1).strip_edges()
+		done.call(code, out, body))
+
+
+func calibrating() -> bool:
+	return bool(me.get("calibrating", false))
 
 
 func can_search() -> bool:
@@ -124,7 +263,8 @@ func _clean_name() -> String:
 
 
 func _register(name: String, attempt: int) -> void:
-	_call(HTTPClient.METHOD_POST, "/register", {"name": name}, func(code: int, d: Dictionary):
+	# (Only tests get here: players make their account on the account screen.)
+	_call(HTTPClient.METHOD_POST, "/register", {"name": name, "email": "%s%d@test.local" % [name.to_lower(), attempt], "password": "test-password"}, func(code: int, d: Dictionary):
 		if code == 201:
 			token = str(d.token)
 			me = d.duplicate()
@@ -146,14 +286,23 @@ func _refresh_me() -> void:
 	_call(HTTPClient.METHOD_GET, "/me", {}, func(code: int, d: Dictionary):
 		if code == 200:
 			me = d
+			me_at = Time.get_unix_time_from_system()
 			loading = false
 			if _auto and can_search():
 				_auto = false
 				search()
 		elif code == 401:
-			# The backend does not know this account (new database): start again.
+			# The session is over (the account is gone, or it was logged out): log in again.
 			token = ""
-			_register(_clean_name(), 0)
+			_save()
+			if auto_account():
+				_register(_clean_name(), 0)
+			else:
+				loading = false
+				_auto = false
+				me = {}
+				if main.menu.is_open and main.menu.screen == "ranked":
+					main.menu.account_open("login", tr("Please log in again."))
 		else:
 			loading = false
 			_auto = false
@@ -169,7 +318,74 @@ func _refresh_board() -> void:
 func _save() -> void:
 	var f := FileAccess.open(_save_path, FileAccess.WRITE)
 	if f:
-		f.store_string(JSON.stringify({"server": server, "token": token}))
+		f.store_string(JSON.stringify({"server": server, "token": token, "name": last_name}))
+
+
+# ---------------------------------------------------------------- login
+
+## The account screen's request. mode: "login", "register" or "secure" (an old account gets an
+## email and a password); f: {name, email, password}. done(ok: bool, error: String).
+func account_submit(mode: String, f: Dictionary, done: Callable) -> void:
+	var path := "/login"
+	var body := {"name": f.name, "password": f.password}
+	if mode == "register":
+		path = "/register"
+		body = {"name": f.name, "email": f.email, "password": f.password}
+	elif mode == "secure":
+		path = "/account/secure"
+		body = {"email": f.email, "password": f.password}
+	_call(HTTPClient.METHOD_POST, path, body, func(code: int, d: Dictionary):
+		if mode == "secure":
+			if code == 200:
+				me["has_password"] = true
+				done.call(true, "")
+			else:
+				done.call(false, _account_error(code, d))
+			return
+		if (code == 200 or code == 201) and d.has("token"):
+			token = str(d.token)
+			me = d.duplicate()
+			me.erase("token")
+			me.rank = 0
+			last_name = str(me.get("name", ""))
+			_save()
+			state = "idle"
+			loading = false
+			done.call(true, "")
+		else:
+			done.call(false, _account_error(code, d)))
+
+
+func _account_error(code: int, d: Dictionary) -> String:
+	if code == 0:
+		return tr("Could not reach the ranking server.")
+	var e := str(d.get("error", ""))
+	match e.get_slice(":", 0):
+		"name":
+			return tr("That name is taken.") if e.contains("taken") else tr("The name needs 3 to 16 letters, digits, _ or -.")
+		"email":
+			return tr("An account with this email exists already.") if e.contains("exists") else tr("That does not look like an email address.")
+		"password":
+			return tr("The password needs at least 6 characters.")
+	if code == 401:
+		return tr("Wrong name or password.")
+	if code == 429:
+		return tr("Too many tries from this computer. Wait a few minutes.")
+	return e if e != "" else tr("Something went wrong (%d).") % code
+
+
+## Logs out: this computer forgets the account (the session ends on the server too).
+func logout() -> void:
+	if state == "searching":
+		cancel()
+	if token != "":
+		_call(HTTPClient.METHOD_POST, "/logout", {}, func(_c: int, _d: Dictionary): pass)
+	token = ""
+	me = {}
+	result = {}
+	notice = ""
+	state = "idle"
+	_save()
 
 
 # ---------------------------------------------------------------- queue
@@ -186,13 +402,68 @@ func search() -> void:
 	result = {}
 	_fails = 0
 	_poll_t = POLL
+	room_code = ""
+	friendly = false
+	report_state = ""
 	_call(HTTPClient.METHOD_POST, "/queue/join", _join_body(), _on_ticket)
+
+
+# ---------------------------------------------------------------- private rooms
+
+## Opens a private room: the server gives a code to tell a friend. The wait looks like the search
+## for a rival (and ends the same way), but only the friend with the code is matched, unrated.
+func room_create(draft := false, team := false) -> void:
+	if not can_search():
+		return
+	state = "searching"
+	_room = false
+	rematch = ""
+	waited = 0.0
+	in_queue = 0
+	notice = ""
+	result = {}
+	_fails = 0
+	_poll_t = POLL
+	room_code = ""
+	friendly = true
+	_call(HTTPClient.METHOD_POST, "/room/create", dict_with(_join_body(), {"draft": draft and not team, "team": team}), _on_ticket)
+
+
+## Joins a friend's room by its code. done(ok: bool, error: String).
+func room_join(code: String, done: Callable) -> void:
+	if not can_search():
+		done.call(false, tr("Not ready yet: wait a moment."))
+		return
+	_call(HTTPClient.METHOD_POST, "/room/join", dict_with(_join_body(), {"code": code}), func(c: int, d: Dictionary):
+		if c == 200 and d.has("status"):
+			state = "searching"
+			_room = false
+			rematch = ""
+			waited = 0.0
+			notice = ""
+			result = {}
+			_fails = 0
+			_poll_t = POLL
+			room_code = ""
+			friendly = true
+			_on_ticket(c, d)
+			done.call(true, "")
+		elif c == 0:
+			done.call(false, tr("Could not reach the ranking server."))
+		else:
+			done.call(false, str(d.get("error", tr("Something went wrong (%d).") % c))))
+
+
+func dict_with(a: Dictionary, b: Dictionary) -> Dictionary:
+	var out := a.duplicate()
+	out.merge(b, true)
+	return out
 
 
 ## What the backend is told when joining the queue: the game version (only the same one
 ## meets) and this computer's home-network addresses (for two players on one router).
 func _join_body() -> Dictionary:
-	return {"version": Menu.version(), "local": Net.local_ips()}
+	return {"version": Menu.version(), "local": Net.local_ips(), "arena": true, "draft": draft_pref and not team_pref, "team": team_pref}
 
 
 ## Who hosts and, for the guest, where it joins (for the screen).
@@ -214,6 +485,11 @@ func cancel() -> void:
 
 
 func _on_ticket(code: int, d: Dictionary) -> void:
+	if code == 409 and state == "searching":
+		# (a draft the server cannot run: say so instead of searching for ever)
+		state = "idle"
+		notice = "!" + str(d.get("error", tr("Something went wrong (%d).") % code))
+		return
 	if state != "searching":
 		return
 	if code == 0 or code >= 500:
@@ -229,7 +505,18 @@ func _on_ticket(code: int, d: Dictionary) -> void:
 		"waiting":
 			waited = float(d.get("waited", waited))
 			in_queue = int(d.get("in_queue", 0))
+			busy = bool(d.get("busy", false))
+			room_code = str(d.get("room", ""))
+			room_players = int(d.get("room_players", 0))
+			room_size = int(d.get("room_size", 2))
 		"idle":
+			if friendly and room_code != "":
+				# The room closed (nobody joined in time): not a reason to start a ranked search.
+				state = "idle"
+				notice = "!" + tr("The room closed: nobody joined in time.")
+				room_code = ""
+				friendly = false
+				return
 			# The backend dropped the ticket (it was not asked for in time): ask again.
 			_call(HTTPClient.METHOD_POST, "/queue/join", _join_body(), _on_ticket)
 
@@ -237,10 +524,41 @@ func _on_ticket(code: int, d: Dictionary) -> void:
 func _begin_match(d: Dictionary) -> void:
 	_match = d
 	_relay_cfg = {}
+	_arena = false
+	friendly = bool(d.get("friendly", false))
+	draft_match = bool(d.get("draft", false))
+	team_match = int(d.get("players", 2)) == 4
+	allies = d.get("allies", []) if team_match else []
+	enemies = d.get("enemies", []) if team_match else []
+	_report_names = []
+	if team_match:
+		for p in enemies + allies:
+			_report_names.append(str(p.get("name", "?")))
+	room_code = ""
+	room_size = 2
+	room_players = 0
+	opponent = d.get("opponent", {})
+	if d.get("mode", "") == "arena" and d.get("relay") is Dictionary:
+		# The server runs the fight: this game only plays its side (see ArenaClient).
+		_arena = true
+		_relay_cfg = {"host": _server_host(), "port": int(d.relay.port), "match_id": int(d.match_id),
+			"token": str(d.relay.token), "slot": int(d.get("slot", 0)), "players": 4 if team_match else 2}
+		_live = true
+		_room = true
+		_started = false
+		_joined = false
+		_t = 0.0
+		state = "connecting"
+		starting = true
+		var err: String = main.start_arena(_relay_cfg, str(main._args.get("arena_pick", "")))
+		starting = false
+		if err != "":
+			abort(err)
+		return
 	if d.get("mode", "") == "relay" and d.get("relay") is Dictionary:
 		# Through the ranking server's relay: nobody has to open a port.
-		_relay_cfg = {"host": _server_host(), "port": int(d.relay.port), "match_id": int(d.match_id), "token": str(d.relay.token)}
-	opponent = d.get("opponent", {})
+		_relay_cfg = {"host": _server_host(), "port": int(d.relay.port), "match_id": int(d.match_id), "token": str(d.relay.token),
+			"no_direct": main._args.has("no_direct")}     # --no_direct: tests of the relay path alone
 	_live = true
 	_room = true
 	_started = false
@@ -297,6 +615,9 @@ func _process(delta: float) -> void:
 			_t += delta
 			if main.net and main.net.linked:
 				state = "playing"
+			elif _arena:
+				if _t > ARENA_CONNECT:
+					abort(tr("Could not reach the game server."))
 			elif _match.role == "host":
 				if _t > HOST_WAIT:
 					abort(tr("Your rival could not connect."))
@@ -317,6 +638,13 @@ func _process(delta: float) -> void:
 				answer_rematch(false)
 			else:
 				on_rematch_no()
+	if not _arena_wait.is_empty():
+		_arena_wait.t += delta
+		if _arena_wait.t >= 1.0 and not _arena_wait.busy:
+			_arena_wait.t = 0.0
+			_arena_wait.tries += 1
+			_arena_wait.busy = true
+			_call(HTTPClient.METHOD_GET, "/me", {}, _on_arena_me)
 	if not _pending.is_empty():
 		_pending.t += delta
 		if _pending.t >= REPORT_EVERY and not _busy:
@@ -332,7 +660,7 @@ func _process(delta: float) -> void:
 ## Stops the match in progress without a result (connection failed, someone left before
 ## the battle). Nobody's rating changes.
 func abort(reason: String) -> void:
-	if _live:
+	if _live and not _arena:
 		_call(HTTPClient.METHOD_POST, "/match/abort", {"match_id": _match.match_id, "reason": "connect_failed"}, func(_c: int, _d: Dictionary): pass)
 	_live = false
 	_match = {}
@@ -356,13 +684,63 @@ func battle_started() -> void:
 	if not _live or _started:
 		return
 	_started = true
+	if _arena:
+		return          # the server knows: it runs the fight
 	_call(HTTPClient.METHOD_POST, "/match/started", {"match_id": _match.match_id}, func(_c: int, _d: Dictionary): pass)
 
 
 ## From Main: the battle ended, for me with this result.
 func battle_ended(won: bool) -> void:
-	if _live and _started:
+	if _live and _started and not _arena:
 		_settle("win" if won else "loss")
+
+
+## From Main, in a ranked arena: the server's result for this match ({winner: slot, reason,
+## hp}). The rating is then changed by the backend (it settles when the match server's
+## process ends, a few seconds later): ask for it until it has moved.
+func arena_result(d: Dictionary) -> void:
+	if not _arena or not _live:
+		return
+	var winner := int(d.get("winner", -1))
+	var slot := int(_match.get("slot", 0))
+	if team_match:
+		slot = slot % 2          # the winner of a 2 vs 2 is a team: 0 or 1
+	_last_id = int(_match.match_id)
+	_last_won = winner == slot
+	_live = false
+	_match = {}
+	state = "idle"
+	skip_auto = true
+	rematch = ""
+	if winner not in [0, 1]:
+		notice = "!" + tr("The match was voided: it does not count.")
+		return
+	if friendly:
+		# A private room: nothing to wait for, the rating does not move.
+		result = {"won": winner == slot, "delta": 0, "friendly": true}
+		notice = ""
+		return
+	notice = tr("Result sent.")
+	_arena_wait = {"t": 0.0, "tries": 0, "busy": false, "rating": float(me.get("rating", 1000.0)),
+		"games": int(me.get("wins", 0)) + int(me.get("losses", 0)), "won": winner == slot}
+
+
+func _on_arena_me(code: int, d: Dictionary) -> void:
+	if _arena_wait.is_empty():
+		return
+	_arena_wait.busy = false
+	if code == 200 and int(d.get("wins", 0)) + int(d.get("losses", 0)) > int(_arena_wait.games):
+		me = d
+		result = {"won": _arena_wait.won, "delta": int(round(float(d.get("rating", 0.0)) - float(_arena_wait.rating)))}
+		_arena_wait = {}
+		notice = ""
+		_refresh_board()
+		if main.hud:
+			main.hud.log_entry(tr("Ranked: %+d rating") % result.delta)
+	elif _arena_wait.tries > 20:
+		_arena_wait = {}
+		notice = tr("The result is in. Your rating will update shortly.")
+		_refresh_me()
 
 
 ## From Main: the rival's connection dropped. Before the battle nothing counts; during it,
@@ -370,6 +748,18 @@ func battle_ended(won: bool) -> void:
 func on_disconnect(_reason: String) -> void:
 	var was_room := _room
 	_room = false
+	if _arena:
+		# The connection to the game server is gone: if the fight was on, the server settles it
+		# (a player who is silent forfeits). The rating shows once that is done.
+		if _live:
+			_live = false
+			_match = {}
+			state = "idle"
+			skip_auto = true
+			notice = "!" + _reason
+			_return_screen = true
+			main.get_tree().create_timer(8.0).timeout.connect(_refresh_me)
+		return
 	if not _live:
 		if was_room:
 			skip_auto = true
@@ -390,6 +780,18 @@ func on_disconnect(_reason: String) -> void:
 func on_leave(battle_over: bool) -> void:
 	if not _live:
 		return
+	if _arena:
+		# Leaving a fight that is on: the ArenaClient tells the server (it counts as a loss).
+		_live = false
+		_match = {}
+		state = "idle"
+		skip_auto = true
+		if _started and not battle_over:
+			notice = "!" + tr("You left the match: it counts as a loss.")
+			main.get_tree().create_timer(6.0).timeout.connect(_refresh_me)
+		else:
+			notice = "!" + tr("Cancelled.")
+		return
 	if _started and not battle_over:
 		_settle("loss")
 	elif not _started:
@@ -405,7 +807,7 @@ func on_room_closed() -> void:
 
 ## Like abort, without touching the room or the screen (the caller is already doing it).
 func abort_silent(reason: String) -> void:
-	if _live:
+	if _live and not _arena:
 		_call(HTTPClient.METHOD_POST, "/match/abort", {"match_id": _match.match_id, "reason": "left"}, func(_c: int, _d: Dictionary): pass)
 	_live = false
 	_match = {}
@@ -453,7 +855,7 @@ func _on_report(code: int, d: Dictionary) -> void:
 
 ## Only the one who lost can ask: A on the result screen.
 func can_ask_rematch() -> bool:
-	return in_ranked_room() and rematch == "" and _last_id > 0 and not _last_won and main._end_t > main.CHOICES_AT
+	return in_ranked_room() and not _arena and not friendly and rematch == "" and _last_id > 0 and not _last_won and main._end_t > main.CHOICES_AT
 
 
 func ask_rematch() -> void:

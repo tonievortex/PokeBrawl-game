@@ -71,6 +71,10 @@ func _ready() -> void:
 			var pm: Node = preload("res://scripts/test_menu_net.gd").new()
 			pm.main = main
 			add_child(pm)
+		"menu_account":
+			var pc: Node = preload("res://scripts/test_account.gd").new()
+			pc.main = main
+			add_child(pc)
 		"animations":
 			var pa: Node = preload("res://scripts/test_animations.gd").new()
 			pa.main = main
@@ -163,6 +167,14 @@ func _ready() -> void:
 			_league_test()
 		"lockon":
 			_lockon_test()
+		"training_immortal":
+			_training_test()
+		"tutorial":
+			_tutorial_test()
+		"replay_file":
+			_replay_file_test()
+		"team_rules":
+			_team_rules_test()
 		"music":
 			# The tracks the game finds (in the exported build, inside its package).
 			await get_tree().process_frame
@@ -1849,6 +1861,201 @@ func _lockon_test() -> void:
 	a.ctrl.yaw = atan2(-toward.x, -toward.z)
 	a.lock_on_looked()
 	_ok("Locking on picks what the camera looks at", a.locked and a.aim_target() == b, str(a.aim_target()))
+	var fails := _results.filter(func(r): return not r[1]).size()
+	print("RESULT: %d of %d" % [_results.size() - fails, _results.size()])
+	get_tree().quit()
+
+
+## Training: nobody faints. A fatal blow leaves 1 HP, the HP is back after 2 s without a hit, the
+## combo counter counts, and a long fight against the active bot ends with both standing.
+func _training_test() -> void:
+	await get_tree().physics_frame
+	main.mode = "training"
+	var ab: Array = await _setup("pikachu", "snorlax", Vector3(-5, 0, 0), Vector3(3, 0, 0))
+	var a: Fighter = ab[0]
+	var b: Fighter = ab[1]
+	_ok("In training both Pokémon are immortal", a.immortal and b.immortal)
+	b._damage_direct(b.hp_max * 10.0)
+	_ok("A blow that would be fatal leaves 1 HP", is_equal_approx(b.hp, 1.0) and b.state != "ko", "hp %.1f %s" % [b.hp, b.state])
+	b._training_hit(120.0)
+	b._training_hit(80.0)
+	_ok("The combo counter adds hits and damage", b.train_hits == 2 and is_equal_approx(b.train_dmg, 200.0), "%d hits, %.0f" % [b.train_hits, b.train_dmg])
+	await _wait(0.3)
+	_capture("training_combo")
+	await _wait(0.7)
+	_ok("Not refilled one second after the hit", b.hp < b.hp_max * 0.5, "hp %.0f of %.0f" % [b.hp, b.hp_max])
+	await _wait(2.5)
+	_ok("Refilled after two seconds without a hit", b.hp >= b.hp_max - 0.01, "hp %.0f of %.0f" % [b.hp, b.hp_max])
+	# A real fight: the active bot attacks, pikachu fires moves for 14 s.
+	main.ai.mode = "active"
+	a.locked = true
+	var lowest := 1000.0
+	var end_at := t + 14.0
+	var next_move := t
+	while t < end_at:
+		if t >= next_move:
+			next_move = t + 0.45
+			a.ctrl.press(["mov1", "mov2", "mov3"][int(t * 2.0) % 3])
+		lowest = minf(lowest, minf(a.hp, b.hp))
+		await get_tree().physics_frame
+	_ok("After 14 s of fighting nobody has fainted", a.state != "ko" and b.state != "ko" and main._end_t < 0.0,
+		"a %s %.0f, b %s %.0f" % [a.state, a.hp, b.state, b.hp])
+	_ok("HP never went below 1", lowest >= 1.0, "lowest %.1f" % lowest)
+	# Outside training: mortal as ever.
+	main.mode = "combat"
+	ab = await _setup("pikachu", "snorlax", Vector3(-5, 0, 0), Vector3(3, 0, 0))
+	_ok("In a normal battle nobody is immortal", not ab[0].immortal and not ab[1].immortal)
+	var fails := _results.filter(func(r): return not r[1]).size()
+	print("RESULT: %d of %d" % [_results.size() - fails, _results.size()])
+	get_tree().quit()
+
+
+## Training's tutorial: each step is ticked off by itself, in order, and the rival fights back at the end.
+func _tutorial_test() -> void:
+	await get_tree().physics_frame
+	var existed := Tutorial.done_before()
+	main.mode = "training"
+	var ab: Array = await _setup("pikachu", "snorlax", Vector3(-5, 0, 0), Vector3(3, 0, 0))
+	var a: Fighter = ab[0]
+	var b: Fighter = ab[1]
+	main.player = a
+	var tu: Tutorial = main.tutorial
+	_ok("Training has a tutorial that does not start by itself in tests", tu != null and not tu.active)
+	a.locked = false
+	tu.start()
+	_ok("It starts at step 1 and the rival stands still", tu.active and tu.step == 0 and main.ai.mode == "still")
+	await _wait(0.3)
+	_ok("Standing still ticks nothing", tu.step == 0)
+	a.global_position += Vector3(5.0, 0.0, 0.0)
+	await _wait(0.3)
+	_ok("Walking ticks 'move'", tu.step == 1, "step %d" % tu.step)
+	a.locked = true
+	await _wait(0.2)
+	_ok("Locking on ticks 'lock on'", tu.step == 2, "step %d" % tu.step)
+	_capture("tutorial_step")
+	tu.note("mov1")
+	await _wait(0.2)
+	_ok("The first move ticks it", tu.step == 3, "step %d" % tu.step)
+	tu.note("mov2")
+	tu.note("mov3")
+	await _wait(0.2)
+	_ok("Two of the other three are not enough", tu.step == 3, "step %d" % tu.step)
+	tu.note("mov4")
+	await _wait(0.2)
+	_ok("All three are", tu.step == 4, "step %d" % tu.step)
+	tu.note("dodge")
+	await _wait(0.2)
+	tu.note("jump")
+	await _wait(0.2)
+	_ok("Dodge and jump tick", tu.step == 6, "step %d" % tu.step)
+	b._training_hit(50.0)
+	await _wait(0.2)
+	_ok("A hit on the rival ticks 'hit'", tu.step == 7, "step %d" % tu.step)
+	b._training_hit(50.0)
+	b._training_hit(50.0)
+	await _wait(0.2)
+	_ok("Three hits in a row end the tutorial", not tu.active and tu.finished_t >= 0.0, "step %d active %s" % [tu.step, tu.active])
+	_ok("The rival fights back after it", main.ai.mode == "active")
+	_ok("It remembers it was done", Tutorial.done_before())
+	if not existed:
+		DirAccess.remove_absolute(Tutorial.DONE_FILE)
+	var fails := _results.filter(func(r): return not r[1]).size()
+	print("RESULT: %d of %d" % [_results.size() - fails, _results.size()])
+	get_tree().quit()
+
+
+## A replay played from a file (--replay_file=path): it starts, both Pokémon move and lose HP as
+## recorded, the result comes at the end, and speed and pause work.
+func _replay_file_test() -> void:
+	await get_tree().physics_frame
+	var path := str(main._args.get("replay_file", ""))
+	main.start_replay_file(path)
+	var rp: ReplayPlayer = main.net
+	var waited := 0.0
+	while not rp.in_battle and waited < 20.0:
+		await get_tree().physics_frame
+		waited += 1.0 / 60.0
+	_ok("The replay starts (header read, both Pokémon on the stage)", rp.in_battle and main.fighters.size() == 2, "%.1f s, %d frames" % [waited, rp.frames.size()])
+	if not rp.in_battle:
+		print("RESULT: 0 of 1")
+		get_tree().quit()
+		return
+	var a: Fighter = main.fighters[0]
+	var b: Fighter = main.fighters[1]
+	var species := [a.species, b.species]
+	_ok("They are the recorded ones (charizard and lucario)", species == ["charizard", "lucario"], str(species))
+	var start_sum := a.global_position + b.global_position
+	var lowest := [a.hp, b.hp]
+	var t_end := t + 12.0
+	rp.speed_i = 3
+	while t < t_end:
+		lowest = [minf(lowest[0], a.hp), minf(lowest[1], b.hp)]
+		await get_tree().physics_frame
+	_ok("They move as in the match", (a.global_position + b.global_position).distance_to(start_sum) > 0.5)
+	_ok("The frames are applied", rp.states_applied > 100, "%d states, position %.0f of %d" % [rp.states_applied, rp.position, rp.frames.size()])
+	_ok("HP goes down as recorded", lowest[0] < a.hp_max or lowest[1] < b.hp_max, "lowest %s of %.0f / %.0f" % [str(lowest), a.hp_max, b.hp_max])
+	rp.toggle_pause()
+	var frozen := rp.position
+	await _wait(0.5)
+	_ok("Pause stops it", rp.position == frozen)
+	rp.toggle_pause()
+	rp.slower()
+	_ok("Speed changes (x%s)" % str(ReplayPlayer.SPEEDS[rp.speed_i]), rp.speed_i == 2)
+	rp.speed_i = 3
+	var guard := t + 60.0
+	while main._end_t < 0.0 and t < guard:
+		await get_tree().physics_frame
+	_ok("The result of the match comes at the end", main._end_t >= 0.0 and is_instance_valid(main.forced_winner), "winner %s" % (main.forced_winner.species if is_instance_valid(main.forced_winner) else "none"))
+	var fails := _results.filter(func(r): return not r[1]).size()
+	print("RESULT: %d of %d" % [_results.size() - fails, _results.size()])
+	get_tree().quit()
+
+
+## A 2 vs 2 (four Pokémon, teams 0 1 0 1): the rival is the nearest enemy standing, shots go through the
+## ally, and a team loses only when both of its Pokémon are out.
+func _team_rules_test() -> void:
+	await get_tree().physics_frame
+	var picks: Array = []
+	for sp in ["pikachu", "snorlax", "pikachu", "snorlax"]:
+		picks.append({"species": sp, "loadout": Loadout.default_for(sp)})
+	main.start_server_battle(picks, "night")
+	await get_tree().physics_frame
+	var f: Array = main.fighters
+	_ok("Four Pokémon, teams 0 1 0 1", f.size() == 4 and [f[0].team, f[1].team, f[2].team, f[3].team] == [0, 1, 0, 1], str([f[0].team, f[1].team, f[2].team, f[3].team]))
+	# The rival is the nearest enemy standing.
+	f[0].global_position = Vector3(-7, 0, -3)
+	f[1].global_position = Vector3(7, 0, -3)
+	f[3].global_position = Vector3(7, 0, 3)
+	f[2].global_position = Vector3(-4, 0, -3)
+	await get_tree().physics_frame
+	_ok("The rival of a Pokémon is the nearest enemy (not the ally)", f[0].rival == f[1] or f[0].rival == f[3], str(f[0].rival.species if f[0].rival else null))
+	var nearest: Fighter = f[0].rival
+	nearest._die({})
+	await get_tree().physics_frame
+	var other: Fighter = f[3] if nearest == f[1] else f[1]
+	_ok("When it falls the rival becomes the other enemy", f[0].rival == other and main._end_t < 0.0, "end %s" % main._end_t)
+	# Friendly fire: a shot from 0 at the enemy passes through the ally standing in the way.
+	var foe: Fighter = other
+	f[0].global_position = Vector3(-7, 0, foe.global_position.z)
+	f[2].global_position = Vector3(-4, 0, foe.global_position.z)
+	f[0].locked = true
+	f[0]._target_pref = foe
+	var ally_before: float = f[2].hp
+	var foe_before: float = foe.hp
+	var t_end := t + 3.0
+	var next := t
+	while t < t_end:
+		f[2].global_position = Vector3(-4, 0, foe.global_position.z)
+		if t >= next:
+			next = t + 0.5
+			f[0].ctrl.press("mov1")
+		await get_tree().physics_frame
+	_ok("The ally standing in the line of fire is not hurt", f[2].hp >= ally_before, "%.0f -> %.0f" % [ally_before, f[2].hp])
+	_ok("The enemy behind is hit", foe.hp < foe_before, "%.0f -> %.0f" % [foe_before, foe.hp])
+	_ok("Team 1 still has a Pokémon standing, the battle goes on", main.team_alive(1) == 1 and main._end_t < 0.0)
+	foe._die({})
+	await get_tree().physics_frame
+	_ok("When both are out the team has lost", main.team_alive(1) == 0 and main._end_t >= 0.0, "end %s" % main._end_t)
 	var fails := _results.filter(func(r): return not r[1]).size()
 	print("RESULT: %d of %d" % [_results.size() - fails, _results.size()])
 	get_tree().quit()

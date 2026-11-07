@@ -82,12 +82,15 @@ func _process(delta: float) -> void:
 	_t += delta
 	_battle_t += delta
 	_move_spots()
-	if main and main.fighters.size() == 2:
-		var hp := [1.0, 1.0]
+	if main and main.fighters.size() >= 2:
+		# The crowd follows each side's health (a 2 vs 2: the average of its two).
+		var hp := [0.0, 0.0]
+		var cnt := [0, 0]
 		for f in main.fighters:
 			if is_instance_valid(f):
-				hp[_side(f)] = clampf(f.hp / f.hp_max, 0.0, 1.0)
-		crowd.set_hp(hp[0], hp[1])
+				hp[_side(f)] += clampf(f.hp / f.hp_max, 0.0, 1.0)
+				cnt[_side(f)] += 1
+		crowd.set_hp(hp[0] / maxf(cnt[0], 1), hp[1] / maxf(cnt[1], 1))
 		if board and not _board_set:
 			_board_set = true
 			for k in 2:

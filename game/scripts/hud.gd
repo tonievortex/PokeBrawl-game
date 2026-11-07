@@ -25,7 +25,7 @@ var _c: Control
 var _s := 3
 var _tex := {}
 var _font: FontFile
-var _lag := [1.0, 1.0]
+var _lag := [1.0, 1.0, 1.0, 1.0]
 var _not_ready := [0.0, 0.0, 0.0, 0.0]
 var _log: Array = []                 # [{text, t}]
 var _log_t := 0.0
@@ -133,7 +133,7 @@ func prepare_portraits(species_list: Array) -> void:
 		var esc: float = data.height / maxf(box.size.y, 0.05)
 		m.scale = Vector3.ONE * esc
 		# Three-quarter view facing the center of the screen.
-		m.rotation.y = PI + (0.55 if i == 0 else -0.55)
+		m.rotation.y = PI + (0.55 if i % 2 == 0 else -0.55)
 		vp.add_child(m)
 		m.play("battle_idle" if m.has_anim("battle_idle") else "ground_idle", 0.0)
 		var cam := Camera3D.new()
@@ -181,9 +181,9 @@ func _process(delta: float) -> void:
 	_s = maxi(1, int(_c.size.y / 300.0))
 	for i in 4:
 		_not_ready[i] = maxf(0.0, _not_ready[i] - delta)
-	for i in 2:
+	for i in 4:
 		var l: Fighter = main.fighters[i] if i < main.fighters.size() else null
-		if l:
+		if l and is_instance_valid(l):
 			var f := l.hp / l.hp_max
 			_lag[i] = f if f > _lag[i] else move_toward(_lag[i], f, delta * 0.35)
 	for r in _portraits:
@@ -254,6 +254,10 @@ func _draw_ui() -> void:
 	_floating()
 	_frame_box(main.fighters[0], 0, Vector2(12, 10), false)
 	_frame_box(main.fighters[1], 1, Vector2(gw - 12 - 140, 10), true)
+	if main.fighters.size() == 4:
+		# A 2 vs 2: the team-mate under me, the second rival under the first.
+		_frame_box(main.fighters[2], 2, Vector2(12, 54), false)
+		_frame_box(main.fighters[3], 3, Vector2(gw - 12 - 140, 54), true)
 	var j: Fighter = main.player
 	if j:
 		_moves(j, Vector2(20, gh - 62))
@@ -270,12 +274,15 @@ func _draw_ui() -> void:
 	if main.net and main.net.in_battle:
 		var ms: int = main.net.ping_ms()
 		var col := Color("7fd65b") if ms < 70 else (Color("ffc94a") if ms < 140 else Color("ff8a6a"))
-		_text(Vector2(gw * 0.5, 8) * _s, "Ping %d ms" % ms, _p_log(), col, 0)
+		_text(Vector2(gw * 0.5, 8) * _s, main.net.ping_label(), _p_log(), col, 0)
 	if main.start_t >= 0.0 and main.start_t < 1.0:
 		_start_banner(main.start_t)
+	if main.mode == "training" and main.net == null:
+		_training_combo()
+		_tutorial_panel()
 	if main.paused:
 		_pause_menu(gw, gh)
-	elif main._end_t > main.RESULT_AT and main.fighters.size() == 2:
+	elif main._end_t > main.RESULT_AT and main.fighters.size() >= 2:
 		_result_screen(gw, gh)
 	if debug and main.ai:
 		var p := _p_log()
@@ -559,6 +566,54 @@ func _opening_cards() -> void:
 
 
 ## "START" when you can move: a thin band across the upper part, gone within a second.
+## Training's tutorial: the step to do, with its keys, and the closing message.
+func _tutorial_panel() -> void:
+	var tu: Tutorial = main.tutorial
+	if tu == null:
+		return
+	if tu.finished_t >= 0.0 and tu.finished_t < Tutorial.END_SHOWN:
+		var a := 1.0 - clampf((tu.finished_t - (Tutorial.END_SHOWN - 1.0)), 0.0, 1.0)
+		_u.begin(_c)
+		_u.slant(540.0, 180.0, 840.0, 100.0, Color(UiKit.DARK, 0.7 * a))
+		_u.slant(540.0, 180.0, 12.0, 100.0, Color(UiKit.GREEN, a))
+		_u.title(960.0, 200.0, tr("TUTORIAL DONE"), 56.0, Color(UiKit.INK, a), 0, 780.0)
+		return
+	if not tu.active:
+		return
+	var st: Dictionary = tu.current()
+	var keys := ""
+	for k in st.keys:
+		var g := Controls.glyph(k)
+		if keys != "" and not keys.ends_with(" "):
+			keys += "  "
+		keys += g
+	_u.begin(_c)
+	var u := _u
+	u.slant(480.0, 170.0, 960.0, 150.0, Color(UiKit.DARK, 0.7))
+	u.slant(480.0, 170.0, 12.0, 150.0, UiKit.YELLOW)
+	u.text(540.0, 182.0, tr("TUTORIAL  %d / %d") % [tu.step + 1, Tutorial.STEPS.size()], 22.0, UiKit.SOFT, u.bold)
+	u.title(540.0, 208.0, tr(st.text).to_upper(), 46.0, UiKit.INK, -1, 860.0)
+	if keys != "":
+		u.text(540.0, 274.0, keys, 30.0, UiKit.YELLOW, u.heavy)
+	for i in Tutorial.STEPS.size():
+		u.rect(1230.0 + i * 24.0, 184.0, 18.0, 8.0, UiKit.YELLOW if i <= tu.step else Color(UiKit.INK, 0.2))
+
+
+## Training: the combo landed on the rival (hits and damage), for a moment after its last hit.
+func _training_combo() -> void:
+	var r: Fighter = main.fighters[1]
+	if not is_instance_valid(r) or r.train_hits <= 0 or r.train_t > 3.0:
+		return
+	var a := 1.0 - clampf((r.train_t - 2.0) / 1.0, 0.0, 1.0)
+	var col: Color = UiKit.YELLOW if r.train_t < 1.4 else UiKit.SOFT
+	_u.begin(_c)
+	var u := _u
+	u.slant(1240.0, 300.0, 520.0, 150.0, Color(UiKit.DARK, 0.55 * a))
+	u.slant(1240.0, 300.0, 12.0, 150.0, Color(col, a))
+	u.title(1500.0, 308.0, tr("%d HITS") % r.train_hits if r.train_hits > 1 else tr("1 HIT"), 72.0, Color(UiKit.INK, a), 0, 440.0)
+	u.text(1500.0, 392.0, tr("%d damage") % int(round(r.train_dmg)), 34.0, Color(col, a), u.heavy, 0)
+
+
 func _start_banner(st: float) -> void:
 	_u.begin(_c)
 	var u := _u
@@ -574,6 +629,8 @@ func _result_screen(_gw: float, _gh: float) -> void:
 	for f in main.fighters:
 		if is_instance_valid(f) and f.state != "ko":
 			winner = f
+	if is_instance_valid(main.forced_winner):
+		winner = main.forced_winner       # the ranked server's word (time, forfeit)
 	_u.begin(_c)
 	var u := _u
 	var k := UiKit.ease((main._end_t - main.RESULT_AT) / 0.35)
@@ -581,7 +638,7 @@ func _result_screen(_gw: float, _gh: float) -> void:
 	var title := tr("Draw")
 	var col := UiKit.GREY
 	if winner and main.player:
-		var won: bool = winner == main.player
+		var won: bool = winner == main.player or (main.fighters.size() > 2 and winner.team == main.player.team)
 		title = tr("You win!") if won else tr("You lose")
 		col = UiKit.RED if won else UiKit.GREY
 	elif winner:
@@ -596,6 +653,12 @@ func _result_screen(_gw: float, _gh: float) -> void:
 	if main._end_t < main.CHOICES_AT:
 		return
 	var k2 := UiKit.ease((main._end_t - main.CHOICES_AT) / 0.3)
+	if main.net is ReplayPlayer:
+		# A replay: one way out.
+		u.slant(650.0, 600.0, 620.0, 150.0, Color(UiKit.PANEL_HI, k2))
+		u.title(960.0, 630.0, tr("BACK TO REPLAYS"), 52.0, Color(UiKit.INK, k2), 0, 560.0)
+		u.text(960.0, 700.0, tr("Esc or %s") % Controls.glyph("jump"), 24.0, Color(UiKit.SOFT, k2), u.bold, 0)
+		return
 	var online: bool = main.net != null
 	var ranked: bool = main.ranked.in_ranked_room()
 	var opts := [
@@ -639,10 +702,36 @@ func _result_screen(_gw: float, _gh: float) -> void:
 		var rr: Dictionary = main.ranked.result
 		var line := tr("Updating your rating...")
 		var col2 := Color(UiKit.SOFT, k2)
-		if not rr.is_empty():
+		if main.ranked.friendly:
+			line = tr("Friendly match: your rating does not change.")
+		elif not rr.is_empty():
 			line = tr("Rating %+d  (now %d)") % [int(rr.delta), int(main.ranked.me.get("rating", 0))]
 			col2 = Color(UiKit.YELLOW if int(rr.delta) >= 0 else UiKit.SOFT, k2)
 		u.text(960.0, 790.0, line, 34.0, col2, u.heavy, 0)
+	# Ranked: report the rival (F5), then pick the reason with 1 to 4.
+	if ranked:
+		match main.ranked.report_state:
+			"choose":
+				u.slant(520.0, 830.0, 880.0, 120.0, Color(UiKit.DARK, 0.85 * k2))
+				u.text(960.0, 838.0, tr("Report your rival: why?  (Esc cancels)"), 24.0, Color(UiKit.SOFT, k2), u.bold, 0)
+				u.text(960.0, 880.0, tr("1 Cheating     2 Abuse     3 Leaving the match     4 Other"), 30.0, Color(UiKit.INK, k2), u.heavy, 0)
+			"target":
+				u.slant(520.0, 830.0, 880.0, 120.0, Color(UiKit.DARK, 0.85 * k2))
+				u.text(960.0, 838.0, tr("Which player?  (Esc cancels)"), 24.0, Color(UiKit.SOFT, k2), u.bold, 0)
+				var names: Array = main.ranked.report_targets()
+				var line2 := ""
+				for n in names.size():
+					line2 += ("     " if n > 0 else "") + "%d %s" % [n + 1, str(names[n])]
+				u.text_fit(960.0, 880.0, line2, 840.0, 30.0, Color(UiKit.INK, k2), u.heavy, 0)
+			"sending":
+				u.text(960.0, 870.0, tr("Sending..."), 26.0, Color(UiKit.SOFT, k2), u.bold, 0)
+			"sent":
+				u.text(960.0, 870.0, tr("Report sent. Thank you."), 28.0, Color(UiKit.GREEN, k2), u.heavy, 0)
+			"error":
+				u.text(960.0, 870.0, "!" + main.ranked.report_msg, 26.0, Color(UiKit.RED.lightened(0.25), k2), u.bold, 0)
+			_:
+				if main.ranked.can_report():
+					u.text(960.0, 900.0, tr("F5  Report your rival"), 24.0, Color(UiKit.SOFT, k2), u.bold, 0)
 	# Online: who has asked for the rematch so far.
 	if online and not ranked and not main.rematch_votes.is_empty():
 		var mine: bool = main.rematch_votes.has(main.net.me)

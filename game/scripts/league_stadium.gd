@@ -142,7 +142,7 @@ static func radius_at(t: float) -> float:
 
 func _process(delta: float) -> void:
 	super(delta)
-	if main and main.fighters.size() == 2 and main.intro_t <= 0.0 and _win_t < 0.0:
+	if main and main.fighters.size() >= 2 and main.intro_t <= 0.0 and _win_t < 0.0:
 		zone_t += delta
 	zone_r = radius_at(zone_t)
 	# The next ring, a few seconds before it closes: marked on the sand, and said.

@@ -25,16 +25,28 @@ const ENERGY_REGEN := 9.0           # per second
 const COMBO_MAX := 5
 const DODGE_DELAY := 1.1        # s from the start of a dodge until charges start refilling again
 const RECOIL := 0.85               # speed when backing away from the locked-on rival
+const NET_CATCHUP := 40.0           # m/s: how fast the rival's copy glides to a big correction
+const NET_SNAP := 14.0              # m: only a difference this big (a reset) is an instant jump
 
 var main: Node
 var species := "pikachu"
 var data: Dictionary
 var types: Array = []
 var team := 0
-var rival: Fighter
+## Who it fights. In a 1 vs 1 it is the other Pokémon. In a 2 vs 2 it is the enemy it is aiming at (the
+## one chosen by locking on, else the nearest one still standing): everything written for "the
+## rival" (moves, lock-on, camera) works as it is, against whichever enemy that is now.
+var _rival: Fighter
+var _target_pref: Fighter
+var rival: Fighter:
+	get:
+		return _pick_enemy() if main != null and main.fighters.size() > 2 else _rival
+	set(v):
+		_rival = v
 var ctrl := Intent.new()
 var is_player := false
 var is_remote := false               # online: the rival's copy, moved by the network
+var is_mine := false                 # ranked arena: the one this screen's player controls (it is a copy of the server's)
 var net_state := {}                 # last real state received from the rival
 var net_lead := 0                # frames to fast-forward whatever starts (the ping)
 var start_pos := Vector3.ZERO       # where each battle starts (rematch)
@@ -51,6 +63,14 @@ var _dive_move := ""                # move waiting to touch the ground (Earthqua
 var _dive_button := ""
 var cds := {}                        # move -> seconds of cooldown left
 var uses := {}                       # moves with limited uses (Rest)
+## Training: nobody faints. HP never goes below 1 and fills up again after TRAIN_REFILL_AFTER seconds
+## without a hit; energy comes back fast and limited moves are restored. The combo being landed on
+## it (hits and damage) is counted for the HUD.
+const TRAIN_REFILL_AFTER := 2.0
+var immortal := false
+var train_hits := 0
+var train_dmg := 0.0
+var train_t := 99.0                  # seconds since the last hit it took
 var state := "free"
 var action: Action = null
 var locked := true
@@ -246,6 +266,45 @@ func on_floor() -> bool:
 	return is_on_floor() or global_position.y < main.ground_y + 0.15
 
 
+## The enemy it fights now in a 2 vs 2: the one locked on while it stands, else the closest standing one.
+func _pick_enemy() -> Fighter:
+	if _target_pref != null and is_instance_valid(_target_pref) and _target_pref.state != "ko" and _target_pref.team != team:
+		return _target_pref
+	var best: Fighter = null
+	var best_d := INF
+	for f in main.fighters:
+		if f == self or not is_instance_valid(f) or f.team == team or f.state == "ko":
+			continue
+		var d := global_position.distance_squared_to(f.global_position)
+		if d < best_d:
+			best_d = d
+			best = f
+	return best if best != null else _rival
+
+
+## The Pokémon on the other side (one in a 1 vs 1, two in a 2 vs 2).
+func enemies() -> Array:
+	if main.fighters.size() <= 2:
+		return [_rival] if _rival != null else []
+	var out: Array = []
+	for f in main.fighters:
+		if is_instance_valid(f) and f.team != team:
+			out.append(f)
+	return out
+
+
+## Locking on or switching to this: a Pokémon (then it is the one fought) or a decoy of one.
+func _set_target(best: Node3D) -> void:
+	if best is Fighter:
+		_target_pref = best
+		fooled_by = null
+	elif best is Decoy:
+		_target_pref = best.user if best.user is Fighter else _target_pref
+		fooled_by = best
+	else:
+		fooled_by = null
+
+
 ## What it looks at and aims at: the rival, or a decoy it is locked on (the AI falls for
 ## one; Substitute locks its rival on its doll; a player can pick one, see switch_target).
 func aim_target() -> Node3D:
@@ -269,10 +328,12 @@ func camera_forward() -> Vector3:
 ## clones): it cannot always tell the real one.
 func lock_candidates() -> Array:
 	var out: Array = []
-	if rival and is_instance_valid(rival) and rival.state != "ko":
-		out.append(rival)
+	var foes := enemies()
+	for e in foes:
+		if is_instance_valid(e) and e.state != "ko":
+			out.append(e)
 	for o in main.combat.targets:
-		if o is Decoy and is_instance_valid(o) and o.user == rival and not o.is_queued_for_deletion():
+		if o is Decoy and is_instance_valid(o) and foes.has(o.user) and not o.is_queued_for_deletion():
 			out.append(o)
 	return out
 
@@ -292,7 +353,7 @@ func lock_on_looked() -> void:
 		if a < best_a:
 			best_a = a
 			best = o
-	fooled_by = null if best == rival else best
+	_set_target(best)
 
 
 ## Souls style: the next target to the right (side 1) or the left (-1) of the current one
@@ -313,7 +374,7 @@ func switch_target(side: int) -> void:
 			best_d = d
 			best = o
 	if best:
-		fooled_by = null if best == rival else best
+		_set_target(best)
 
 
 ## How high the feet can rise with hits and dashes that go upward: its jump height
@@ -473,10 +534,15 @@ func _net_correct(delta: float) -> void:
 		return
 	var s := net_state
 	hp = s.hp
-	energy = s.energy
-	charges = s.charges
-	flight = s.flight
-	flying = s.flying
+	if is_mine:
+		# Your own Pokémon predicts these on its own (flying would flicker if the server's
+		# slightly old value overwrote it): energy only drifts toward the server's.
+		energy = lerpf(energy, s.energy, 0.15)
+	else:
+		energy = s.energy
+		charges = s.charges
+		flight = s.flight
+		flying = s.flying
 	slow = s.slow
 	_slow_t = s.slow_t
 	var had := status
@@ -504,12 +570,32 @@ func _net_correct(delta: float) -> void:
 	var age_t: float = s.outbound + (main.net._t - s.received)
 	var target: Vector3 = s.pos + s.speed * clampf(age_t, 0.0, 0.3)
 	var error := target - global_position
-	if error.length() > 2.5:
+	# Small errors fade out smoothly. A big one (a dash that was seen late, a hit that pushed
+	# it) is caught up with in a quick glide, never an instant jump: the faster it moves and
+	# the older the news, the more difference is normal. Only an enormous one (a reset) snaps.
+	var dist := error.length()
+	var limit: float = 3.0 + s.speed.length() * clampf(age_t, 0.0, 0.4)
+	if is_mine:
+		# Your own Pokémon is ahead of the server by about one ping (it moves on your keys at
+		# once): a difference of that size is normal and left alone; only a real one (a hit
+		# that pushed you, a dash the server refused) is pulled in, gently.
+		var ahead: float = 0.6 + s.speed.length() * clampf(age_t * 1.5, 0.0, 0.6)
+		if dist > NET_SNAP:
+			global_position = target
+			reset_physics_interpolation()
+		elif dist > ahead:
+			global_position += error * minf((NET_CATCHUP * 0.6) * delta / dist, 1.0)
+		else:
+			global_position += error * (1.0 - exp(-2.0 * delta))
+	elif dist > NET_SNAP:
 		global_position = target
 		reset_physics_interpolation()
+	elif dist > limit:
+		global_position += error * minf(NET_CATCHUP * delta / dist, 1.0)
 	else:
 		global_position += error * (1.0 - exp(-12.0 * delta))
-	face_yaw = lerp_angle(face_yaw, s.yaw, 1.0 - exp(-14.0 * delta))
+	if not is_mine:
+		face_yaw = lerp_angle(face_yaw, s.yaw, 1.0 - exp(-14.0 * delta))
 
 
 ## Stunned from outside (Detect): drops whatever it was doing.
@@ -745,6 +831,13 @@ func _timers(delta: float) -> void:
 		charges = minf(dodge_cfg.charges, charges + delta / dodge_cfg.recharge)
 	_flight_timers(delta)
 	_status_process(delta)
+	if immortal and state != "ko":
+		train_t += delta
+		energy = minf(ENERGY_MAX, energy + 25.0 * delta)
+		if train_t > TRAIN_REFILL_AFTER:
+			hp = minf(hp_max, hp + hp_max * 1.2 * delta)
+			if hp >= hp_max:
+				uses.clear()
 	_passive_t -= delta
 	if wet > 0.0:
 		wet -= delta
@@ -762,7 +855,7 @@ func _timers(delta: float) -> void:
 	if translucent > 0.0:
 		translucent -= delta
 		var hidden := translucent > 0.0
-		var sees_self: bool = is_player or (main.net != null and not is_remote)
+		var sees_self: bool = is_player or is_mine or (main.net != null and not is_remote)
 		model.visible = not hidden or sees_self
 		model.mesh_instance.transparency = 0.85 if hidden and sees_self else 0.0
 		model.mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF if hidden else GeometryInstance3D.SHADOW_CASTING_SETTING_ON
@@ -935,18 +1028,28 @@ func _flight_timers(delta: float) -> void:
 
 
 func _separate() -> void:
-	if rival == null or not is_instance_valid(rival) or rival.state == "ko":
+	if main.fighters.size() > 2:
+		for o in main.fighters:
+			if o != self and is_instance_valid(o):
+				_separate_from(o)
+	elif rival != null and is_instance_valid(rival):
+		_separate_from(rival)
+
+
+## Not standing inside another Pokémon: each one is pushed out by its share.
+func _separate_from(other: Fighter) -> void:
+	if other.state == "ko":
 		return
-	if (action and action.d.get("pierces", false)) or (rival.action and rival.action.d.get("pierces", false)):
+	if (action and action.d.get("pierces", false)) or (other.action and other.action.d.get("pierces", false)):
 		return
-	var d := global_position - rival.global_position
+	var d := global_position - other.global_position
 	d.y = 0.0
-	var min_d: float = radius() + rival.radius()
+	var min_d: float = radius() + other.radius()
 	var l := d.length()
-	if l < min_d and l > 0.001 and absf(global_position.y - rival.global_position.y) < data.height:
+	if l < min_d and l > 0.001 and absf(global_position.y - other.global_position.y) < data.height:
 		# Position correction (not velocity: otherwise it accumulates and they slide away).
 		# Each one moves its share; the heavier one, less.
-		var part: float = data.knockback / (data.knockback + rival.data.knockback)
+		var part: float = data.knockback / (data.knockback + other.data.knockback)
 		var corr: Vector3 = d / l * (min_d - l) * part * 0.5
 		global_position += Vector3(corr.x, 0, corr.z)
 
@@ -995,7 +1098,7 @@ func _try_actions(on_ground: bool) -> void:
 				return
 			elif not ready(move):
 				_consume(b)
-				if is_player:
+				if is_player or is_mine:
 					main.hud.warn_not_ready(i)
 
 
@@ -1304,6 +1407,7 @@ func receive(info: Dictionary) -> String:
 	else:
 		_combo = 0
 	hp -= damage
+	_training_hit(damage)
 	_flash = 1.0
 	# Gluttony: no items yet, so it holds a Sitrus Berry and, being a glutton, eats it at
 	# half HP instead of a quarter: it heals a quarter of its HP, once per battle.
@@ -1406,8 +1510,23 @@ func _damage_direct(d: float) -> void:
 	if state == "ko":
 		return
 	hp -= d
+	if immortal:
+		hp = maxf(hp, 1.0)
 	if hp <= 0.0:
 		_die({})
+
+
+## Training: a hit that would have been the last one leaves 1 HP; the combo counter grows.
+func _training_hit(damage: float) -> void:
+	if not immortal:
+		return
+	hp = maxf(hp, 1.0)
+	if train_t > 1.4:
+		train_hits = 0
+		train_dmg = 0.0
+	train_hits += 1
+	train_dmg += damage
+	train_t = 0.0
 
 
 func heal(c: float) -> void:
@@ -1446,6 +1565,9 @@ func _die(_info: Dictionary) -> void:
 
 ## Fell into the stage's void (only stages with one: Arena.void_y): KO.
 func _ring_out() -> void:
+	if immortal:
+		reset(start_pos, start_yaw)          # training: put back on the stage, nobody is out
+		return
 	main.vfx.text(global_position + Vector3.UP * 4.0, tr("Out!"), Color(1.0, 0.55, 0.3))
 	# "since_hit": seconds since it was last hit (a long time: it walked off on its own).
 	main.session.event("ring_out", {"species": species, "team": team, "state": state, "left_as": _left_as,

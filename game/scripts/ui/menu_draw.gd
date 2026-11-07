@@ -7,17 +7,17 @@ extends RefCounted
 ## with a sheet. Highlights ease in and out; text that could run long is fitted to its
 ## block so nothing spills out.
 
-const ITEM_COLOR := {"combat": UiKit.RED, "online": UiKit.GREEN, "training": UiKit.ORANGE, "moves": UiKit.BLUE,
-	"options": UiKit.GREY, "quit": Color("3a3a42"), "profile": Color("6a4bb8"), "create": UiKit.GREEN, "join": UiKit.BLUE, "back": UiKit.GREY,
-	"ranked": UiKit.ORANGE}
-## Tiles of the main menu and the online menu: [x, y, w, h] in the 1920 × 1080 space.
-## Tiles of the main menu and the online menu: [x, y, w, h] in the 1920 × 1080 space, x
+const ITEM_COLOR := {"combat": UiKit.RED, "training": UiKit.ORANGE, "moves": UiKit.BLUE,
+	"options": UiKit.GREY, "quit": Color("3a3a42"), "profile": Color("6a4bb8"), "ranked": UiKit.GREEN}
+## Tiles of the main menu: [x, y, w, h] in the 1920 × 1080 space, x
 ## measured on the wall's base line (TILE_BASE). All their sides lean on that same line, so
 ## the gaps between tiles stay the same from top to bottom whatever their height.
 const TILE_BASE := 840.0
 const MAIN_TILES := [[70, 150, 760, 690], [870, 150, 520, 330], [1430, 150, 300, 330],
 	[870, 510, 520, 330], [1430, 510, 300, 150], [1430, 690, 300, 150]]
-const ONLINE_TILES := [[70, 150, 760, 690], [870, 150, 860, 500], [870, 690, 860, 150]]
+## The color of each division (badge, bar and the ranking's names).
+const DIVISION_COLOR := {"Bronze": Color("c27a3b"), "Silver": Color("b9c0cc"), "Gold": Color("ffd23f"), "Platinum": Color("4fd1c5"),
+	"Diamond": Color("5ab4ff"), "Master": Color("c97bff")}
 ## Credits at the bottom of the main menu, small. Cobblemon's assets are CC BY-NC 3.0:
 ## the team, the license and the non-profit nature are named.
 const CREDITS := ["Created by xjoje6. Made with Godot Engine.",
@@ -69,26 +69,22 @@ func draw(h: Hud) -> void:
 			_title()
 		"nick":
 			_nick()
+		"account":
+			_account()
+		"room":
+			_room()
+		"replays":
+			_replays()
+		"draft":
+			_draft()
 		"main":
 			_header(tr("Menu"), ITEM_COLOR.get(Menu.MAIN_MENU[m.cursor][0], UiKit.RED))
 			_tiles(Menu.MAIN_MENU, MAIN_TILES)
 			_profile_badge()
 			_credits()
 			u.hints([[Controls.glyph("jump"), tr("Choose")], [Controls.glyph("menu_back"), tr("Back")]])
-		"online":
-			_header(tr("Online"), UiKit.GREEN)
-			_tiles(Menu.ONLINE, ONLINE_TILES)
-			u.hints([[Controls.glyph("jump"), tr("Select")], [Controls.glyph("menu_back"), tr("Back")]])
-		"waiting":
-			_waiting()
 		"ranked":
 			_ranked()
-		"connecting":
-			_header(tr("Connecting"), UiKit.GREEN)
-			_card(160.0, 220.0, 1000.0, [tr("Joining %s:7777") % m.ip + ".".repeat(int(_t * 2.0) % 4)], UiKit.GREEN)
-			u.hints([[Controls.glyph("menu_back"), tr("Cancel")]])
-		"join":
-			_join()
 		"selection":
 			_selection()
 		"moves":
@@ -181,18 +177,12 @@ func _tile_art(id: String, x: float, y: float, w: float, _hgt: float, o: float) 
 		"combat":
 			u.tex(m.render("menu_b", m.choice.p2, Vector2i(300, 340), -0.5), _tile_x(x, y + 230.0) + 10.0, y + 60.0, 300.0, 340.0, Color(1, 1, 1, 0.35 + 0.65 * o))
 			u.tex(m.render("menu_a", m.choice.p1, Vector2i(420, 470), 0.5), _tile_x(x, y + 300.0) + w - 430.0, y + 10.0, 420.0, 470.0)
-		"online":
-			u.title(_tile_x(x, y + 120.0) + w - 50.0, y + 20.0, "1 VS 1", 110.0, Color(1, 1, 1, 0.14), 1)
 		"moves":
 			var lo := Loadout.saved(m.choice.p1)
 			var ix := _tile_x(x, y + 90.0) + w - 70.0
 			for mv in lo.moves:
 				u.type_icon(Moves.DATA[mv].type, ix - 10.0, y + 30.0, 56.0, 0.5 + 0.5 * o)
 				ix -= 66.0
-		"create":
-			u.title(_tile_x(x, y + 150.0) + w - 50.0, y + 30.0, "7777", 120.0, Color(1, 1, 1, 0.12), 1)
-		"join":
-			u.title(_tile_x(x, y + 120.0) + w - 50.0, y + 30.0, m.ip, 90.0, Color(1, 1, 1, 0.14), 1, w - 120.0)
 		"ranked":
 			var rating = m.main.ranked.me.get("rating", "")
 			u.title(_tile_x(x, y + 150.0) + w - 50.0, y + 30.0, str(int(rating)) if rating != "" else "RATED", 150.0, Color(1, 1, 1, 0.16), 1)
@@ -222,24 +212,6 @@ func _card(x: float, y: float, w: float, lines: Array, col: Color) -> void:
 		ly = u.para(u.edge(x, y, hgt, ly, UiKit.TALL) + 50.0, ly, text, w - 110.0, 30.0, c, u.bold) + 10.0
 
 
-func _waiting() -> void:
-	_header(tr("Waiting for rival"), UiKit.GREEN)
-	var lines: Array = [tr("Give your friend one of these IPs:")]
-	var net: Net = m.main.net
-	if net and net.public_ip != "":
-		lines.append(tr("Over the internet: %s") % net.public_ip)
-	for loc in Net.local_ips():
-		lines.append(tr("Local network or VPN: %s") % loc)
-	if net and net.upnp_testing:
-		lines.append(tr("Opening port 7777 on the router") + ".".repeat(int(_t * 2.0) % 4))
-	elif net and net.upnp_ok:
-		lines.append(tr("Port 7777 open on the router."))
-	else:
-		lines.append("!" + tr("The router did not open the port: open it (UDP 7777) or use Radmin VPN or ZeroTier."))
-	_card(160.0, 200.0, 1200.0, lines, UiKit.GREEN)
-	u.hints([[Controls.glyph("menu_back"), tr("Back")]])
-
-
 ## Ranked: your rating and place on the left, the top of the ranking on the right, and
 ## under your card the button to look for a rival (or how the search is going).
 func _ranked() -> void:
@@ -251,14 +223,22 @@ func _ranked() -> void:
 	u.slant(150.0, 180.0, 14.0, 430.0, UiKit.ORANGE, UiKit.TALL)
 	u.text(220.0, 205.0, tr("TRAINER"), 24.0, UiKit.SOFT, u.bold)
 	u.title(220.0, 235.0, str(r.me.get("name", "...")), 64.0, UiKit.INK, -1, 620.0)
-	u.text(220.0, 335.0, tr("RATING"), 24.0, UiKit.SOFT, u.bold)
-	u.title(220.0, 360.0, str(int(r.me.rating)) if r.me.has("rating") else "----", 140.0, UiKit.YELLOW, -1, 620.0)
+	_rating_block(r)
 	if not r.me.is_empty():
 		var rank: int = int(r.me.get("rank", 0))
 		var line := tr("%d wins, %d losses") % [int(r.me.wins), int(r.me.losses)]
 		if rank > 0 and int(r.me.wins) + int(r.me.losses) > 0:
 			line = tr("Rank %d") % rank + "   " + line
-		u.text_fit(220.0, 540.0, line, 640.0, 30.0, UiKit.INK, u.bold)
+		u.text_fit(220.0, 535.0, line, 640.0, 30.0, UiKit.INK, u.bold)
+		var left: int = r.season_left()
+		if left >= 0:
+			var s: Dictionary = r.me.season
+			var when := tr("%d d %d h") % [left / 86400, left % 86400 / 3600] if left >= 86400 else tr("%d h %d min") % [left / 3600, left % 3600 / 60]
+			var last := str(r.me.get("last_division", ""))
+			var text := tr("Season %s ends in %s") % [str(s.get("name", "")), when]
+			if last != "":
+				text += "   " + tr("Last season: %s") % tr(last)
+			u.text_fit(220.0, 577.0, text, 660.0, 22.0, UiKit.SOFT, u.bold)
 	# The ranking.
 	u.slant(950.0, 180.0, 830.0, 640.0, UiKit.PANEL, UiKit.TALL)
 	u.slant(950.0, 180.0, 14.0, 640.0, UiKit.YELLOW, UiKit.TALL)
@@ -271,7 +251,10 @@ func _ranked() -> void:
 		if int(p.get("id", -1)) == int(r.me.get("id", -2)):
 			u.rect(990.0, ry - 4.0, 760.0, 48.0, Color(UiKit.ORANGE, 0.3))
 		u.text(1020.0, ry, "%d" % int(p.rank), 30.0, UiKit.SOFT, u.heavy)
-		u.text_fit(1100.0, ry, str(p.name), 430.0, 30.0, UiKit.INK, u.bold)
+		u.text_fit(1100.0, ry, str(p.name), 330.0, 30.0, UiKit.INK, u.bold)
+		var dv := str(p.get("division", ""))
+		if dv != "":
+			u.text(1450.0, ry + 4.0, tr(dv), 24.0, DIVISION_COLOR.get(dv, UiKit.SOFT), u.heavy)
 		u.text(1730.0, ry, str(int(p.rating)), 30.0, UiKit.YELLOW, u.heavy, 1)
 	# The action.
 	var y := 650.0
@@ -283,14 +266,43 @@ func _ranked() -> void:
 				u.slant(150.0, y, 760.0, 110.0, UiKit.ORANGE.lerp(UiKit.YELLOW, 0.2 * (0.5 + 0.5 * sin(_t * TAU * 0.6))))
 				zone("ranked", 0, 150.0, y, 760.0, 110.0)
 				u.title(530.0, y + 22.0, tr("FIND MATCH"), 64.0, UiKit.INK, 0, 700.0)
+				u.slant(150.0, y + 125.0, 760.0, 64.0, UiKit.PANEL_HI)
+				zone("friend", 0, 150.0, y + 125.0, 760.0, 64.0)
+				u.text(530.0, y + 140.0, tr("F4  PLAY WITH A FRIEND (NO RATING)"), 28.0, UiKit.INK, u.heavy, 0)
+				u.text(340.0, y + 84.0, tr("F8  DRAFT: %s") % (tr("ON") if r.draft_pref else tr("OFF")), 22.0, UiKit.DARK, u.heavy, 0)
+				zone("draftpref", 0, 150.0, y + 80.0, 380.0, 30.0)
+				u.text(720.0, y + 84.0, tr("F10  2 VS 2: %s") % (tr("ON") if r.team_pref else tr("OFF")), 22.0, UiKit.DARK, u.heavy, 0)
+				zone("teampref", 0, 530.0, y + 80.0, 380.0, 30.0)
+				for k in 2:
+					u.slant(150.0 + k * 390.0, y + 205.0, 370.0, 56.0, UiKit.PANEL_HI)
+					zone("replays", k, 150.0 + k * 390.0, y + 205.0, 370.0, 56.0)
+					u.text(335.0 + k * 390.0, y + 218.0, tr("F6  MY REPLAYS") if k == 0 else tr("F7  WATCH LIVE"), 24.0, UiKit.INK, u.heavy, 0)
 		"searching":
 			var crowd := tr("%d players are searching") % r.in_queue if r.in_queue > 1 else tr("You are the only one searching: another player has to look for a match too.")
-			_card(150.0, y, 760.0, [tr("Searching for a rival") + dots, tr("%d s") % int(r.waited), crowd], UiKit.ORANGE)
+			if r.room_code != "":
+				if r.room_size == 4:
+					_card(150.0, y, 760.0, [tr("Your 2 vs 2 room: %s") % r.room_code, tr("Three friends type this code (Friendly match, Join): %d / 4 here") % maxi(r.room_players, 1) + dots, tr("%d s") % int(r.waited)], UiKit.BLUE)
+				else:
+					_card(150.0, y, 760.0, [tr("Your room: %s") % r.room_code, tr("Tell your friend this code (Friendly match, Join). Waiting for them") + dots, tr("%d s") % int(r.waited)], UiKit.BLUE)
+			elif r.room_size == 4 and r.friendly:
+				_card(150.0, y, 760.0, [tr("In the 2 vs 2 room") + dots, tr("%d / 4 players here: the match starts when it is full.") % maxi(r.room_players, 1)], UiKit.BLUE)
+			elif r.team_pref:
+				_card(150.0, y, 760.0, [tr("Searching for a 2 vs 2") + dots, tr("%d s") % int(r.waited), tr("Four players are needed: %d searching now.") % maxi(r.in_queue, 1)], UiKit.ORANGE)
+			else:
+				_card(150.0, y, 760.0, [tr("Searching for a rival") + dots, tr("%d s") % int(r.waited), tr("A rival is ready: waiting for a free game server.") if r.busy else crowd], UiKit.ORANGE)
 		"connecting":
 			var rival := str(r.opponent.get("name", "?"))
-			var lines2: Array = [tr("Rival found: %s (%d)") % [rival, int(r.opponent.get("rating", 0))]]
+			var lines2: Array = [(tr("Rival found: %s (%d)") % [rival, int(r.opponent.get("rating", 0))]) if not bool(r.opponent.get("calibrating", false))
+				else tr("Rival found: %s (placement games)") % rival]
 			var net: Net = m.main.net
-			if r.match_mode() == "relay":
+			if r.team_match:
+				lines2 = [tr("Team found: you and %s") % str(r.allies[0].get("name", "?")) if not r.allies.is_empty() else tr("Team found"),
+					tr("against %s and %s") % [str(r.enemies[0].get("name", "?")), str(r.enemies[1].get("name", "?"))] if r.enemies.size() >= 2 else ""]
+			if r.team_match:
+				lines2.append(tr("Connecting to the game server") + dots)
+				if r.connecting_for() > 6.0 and not r.relay_ok():
+					lines2.append("!" + tr("The game server does not answer on UDP: its UDP port may be closed."))
+			elif r.match_mode() == "relay":
 				# Through the ranking server: nothing to open anywhere.
 				lines2.append(tr("Connecting through the PokeBrawl server") + dots)
 				if r.connecting_for() > 6.0 and not r.relay_ok():
@@ -315,12 +327,52 @@ func _ranked() -> void:
 		lines.append(r.notice)
 	if not lines.is_empty():
 		# Under the button when there is one, otherwise where the status card would be.
-		_card(150.0, 780.0 if r.can_search() else y, 760.0, lines,
+		_card(150.0, 940.0 if r.can_search() else y, 760.0, lines,
 			UiKit.RED if r.notice.begins_with("!") else UiKit.GREEN)
+	if r.state in ["idle", "searching"] and r.logged_in() and not r.loading:
+		u.slant(700.0, 192.0, 190.0, 44.0, UiKit.PANEL_HI)
+		zone("logout", 0, 700.0, 192.0, 190.0, 44.0)
+		u.text(795.0, 198.0, tr("F2  Log out"), 24.0, UiKit.INK, u.bold, 0)
+		if not r.me.is_empty() and not bool(r.me.get("has_password", true)):
+			u.slant(950.0, 850.0, 830.0, 100.0, UiKit.YELLOW.lerp(UiKit.ORANGE, 0.3))
+			zone("secure", 0, 950.0, 850.0, 830.0, 100.0)
+			u.text(1365.0, 862.0, tr("F3  SECURE YOUR ACCOUNT"), 34.0, UiKit.DARK, u.heavy, 0)
+			u.text_fit(1365.0, 908.0, tr("Add an email and a password: you will keep it on any computer."), 780.0, 22.0, UiKit.DARK, u.bold, 0)
 	if r.state == "idle":
 		u.hints([[Controls.glyph("jump"), tr("Find match") if r.can_search() else tr("Retry")], [Controls.glyph("menu_back"), tr("Back")]])
 	else:
 		u.hints([[Controls.glyph("menu_back"), tr("Cancel")]])
+
+
+## The card's big number: the rating under a division badge and the way to the next division;
+## while still calibrating, the placement games instead (the rating stays hidden).
+func _rating_block(r: Ranked) -> void:
+	if r.me.is_empty():
+		u.text(220.0, 335.0, tr("RATING"), 24.0, UiKit.SOFT, u.bold)
+		u.title(220.0, 360.0, "----", 140.0, UiKit.YELLOW, -1, 620.0)
+		return
+	if r.calibrating():
+		var done := int(r.me.get("placement", 0))
+		var of := int(r.me.get("placement_of", 10))
+		u.text(220.0, 335.0, tr("PLACEMENT"), 24.0, UiKit.SOFT, u.bold)
+		u.title(220.0, 360.0, "%d/%d" % [done, of], 140.0, UiKit.YELLOW, -1, 620.0)
+		for i in of:
+			u.rect(220.0 + i * 62.0, 510.0, 54.0, 12.0, UiKit.YELLOW if i < done else Color(UiKit.INK, 0.18))
+		return
+	var info = r.me.get("division_info")
+	var name := str(r.me.get("division", ""))
+	var col: Color = DIVISION_COLOR.get(name, UiKit.YELLOW)
+	u.text(220.0, 335.0, tr("RATING"), 24.0, UiKit.SOFT, u.bold)
+	u.slant(560.0, 330.0, 320.0, 44.0, col)
+	u.text(720.0, 336.0, tr(name).to_upper(), 30.0, UiKit.DARK, u.heavy, 0)
+	u.title(220.0, 360.0, str(int(r.me.get("rating", 0))), 140.0, UiKit.YELLOW, -1, 320.0)
+	if info is Dictionary and str(info.get("next", "")) != "":
+		var p := float(info.get("progress", 0.0))
+		u.rect(220.0, 510.0, 660.0, 12.0, Color(UiKit.INK, 0.18))
+		u.rect(220.0, 510.0, 660.0 * p, 12.0, col)
+		u.text(880.0, 480.0, tr("%s at %d") % [tr(str(info.next)), int(info.next_at)], 22.0, UiKit.SOFT, u.bold, 1)
+	elif info is Dictionary:
+		u.rect(220.0, 510.0, 660.0, 12.0, col)
 
 
 ## The window asked the first time: type your nickname and that is all. The keyboard of the
@@ -347,34 +399,181 @@ func _nick() -> void:
 	u.hints([[Controls.glyph("jump"), tr("Press")], [Controls.glyph("menu_back"), tr("Delete")]])
 
 
-func _join() -> void:
-	_header(tr("Join"), UiKit.BLUE)
-	u.slant(150.0, 180.0, 920.0, 150.0, UiKit.PANEL)
-	u.slant(150.0, 180.0, 14.0, 150.0, UiKit.BLUE)
-	u.text(u.edge(150.0, 180.0, 150.0, 196.0) + 40.0, 196.0, tr("Game IP:"), 26.0, UiKit.SOFT, u.bold)
-	u.title(u.edge(150.0, 180.0, 150.0, 280.0) + 50.0, 232.0, m.ip, 70.0, UiKit.INK, -1, 780.0)
-	var w := minf(u.width(m.ip, 70.0, u.heavy), 780.0)
-	u.rect(u.edge(150.0, 180.0, 150.0, 280.0) + 66.0 + w, 300.0, 34.0, 8.0, Color(UiKit.YELLOW, 0.6 + 0.4 * sin(_t * TAU * 0.9)))
-	var pad: bool = Controls.last_device != "keyboard"
-	var key_on := m.key_on()
-	for row in 4:
-		for col in 4:
-			var key: String = Menu.KEYPAD[row][col]
-			if key == "connect" and col == 3:
-				continue
-			var cw := 420.0 if key == "connect" else 200.0
-			var cx := 150.0 + col * 220.0
-			var cy := 370.0 + row * 120.0
-			var o := on("key%d%d" % [col, row], Vector2i(col, row) == key_on)
-			u.slant(cx, cy, cw, 100.0, UiKit.PANEL.lerp(UiKit.BLUE, o))
-			zone("key", row * 4 + col, cx, cy, cw, 100.0)
-			u.text_fit(cx + cw * 0.5 + 10.0, cy + 28.0, m.key_label(key), cw - 40.0, 40.0, UiKit.INK, u.heavy, 0)
-	if m.message != "":
-		_card(1150.0, 180.0, 700.0, ["!" + m.message], UiKit.RED)
-	if pad:
-		u.hints([[Controls.glyph("jump"), tr("Press")], [Controls.glyph("menu_back"), tr("Delete")]])
+## The draft: the roster as a grid. In the ban stage you choose a Pokémon your rival may not use, then the
+## players take turns picking one; what is banned or picked is crossed out.
+func _draft() -> void:
+	var d: Dictionary = m.draft
+	var stage := str(d.get("stage", "wait"))
+	_header(tr("Draft"), UiKit.ORANGE)
+	var slot: int = m.main.net.slot if m.main.net is ArenaClient else 0
+	var action: String = m.draft_action()
+	var left := int(ceilf(m.draft_left()))
+	var line := tr("Waiting for your rival to connect") + ".".repeat(int(_t * 2.0) % 4)
+	match stage:
+		"ban":
+			line = tr("BAN: choose a Pokémon your rival cannot use (%d s)") % left if action == "ban" else tr("Ban made. Waiting for your rival (%d s)") % left
+		"pick":
+			line = tr("YOUR PICK: choose your Pokémon (%d s)") % left if action == "pick" else tr("Your rival is picking (%d s)") % left
+		"done":
+			line = tr("Draft complete")
+	u.slant(150.0, 170.0, 1500.0, 70.0, UiKit.ORANGE if action != "" else UiKit.PANEL)
+	u.title(900.0, 176.0, line.to_upper(), 40.0, UiKit.DARK if action != "" else UiKit.INK, 0, 1440.0)
+	var list: Array = m.pokemon_list()
+	var cols: int = Menu.COLUMNS
+	var tw := 292.0
+	var th := 88.0
+	for i in list.size():
+		var sp: String = list[i]
+		var tx := 150.0 + (i % cols) * (tw + 10.0)
+		var ty := 262.0 + (i / cols) * (th + 10.0)
+		var here: bool = i == m.draft_cursor
+		var o := on("dr%d" % i, here)
+		var col := UiKit.PANEL
+		var tag := ""
+		if d.get("bans", [null, null]).has(sp):
+			col = UiKit.RED.darkened(0.45)
+			tag = tr("BANNED")
+		elif d.get("picks", [null, null]).has(sp):
+			var mine: bool = str(d.picks[slot]) == sp
+			col = UiKit.GREEN.darkened(0.2) if mine else UiKit.BLUE.darkened(0.2)
+			tag = tr("YOURS") if mine else tr("RIVAL")
+		elif m.draft_my_ban == sp and stage == "ban":
+			col = UiKit.ORANGE.darkened(0.3)
+			tag = tr("YOUR BAN")
+		u.slant(tx, ty, tw, th, col.lerp(UiKit.INK, 0.25 * o))
+		zone("dpick", i, tx, ty, tw, th)
+		u.text_fit(tx + 26.0, ty + 14.0, tr(Roster.POKEMON[sp].display_name), tw - 50.0, 30.0, UiKit.INK, u.heavy)
+		if tag != "":
+			u.text(tx + 26.0, ty + 54.0, tag, 22.0, Color(UiKit.INK, 0.8), u.bold)
+	u.hints([[Controls.glyph("jump"), tr("Ban") if action == "ban" else (tr("Pick") if action == "pick" else tr("Wait"))], [Controls.glyph("menu_back"), tr("Leave")]])
+
+
+## Replays: the player's own latest matches, or the ones being played now (a few seconds behind).
+func _replays() -> void:
+	_header(tr("Replays"), UiKit.BLUE)
+	for i in 2:
+		var here: bool = m.rp_tab == i
+		var tx := 150.0 + i * 420.0
+		u.slant(tx, 180.0, 400.0, 60.0, UiKit.BLUE if here else UiKit.PANEL)
+		zone("replays", i, tx, 180.0, 400.0, 60.0)
+		u.title(tx + 200.0, 186.0, tr("MY MATCHES") if i == 0 else tr("LIVE NOW"), 36.0, UiKit.INK, 0, 380.0)
+	var rows: Array = m.rp_rows()
+	var r: Ranked = m.main.ranked
+	if m.main.net is ReplayPlayer:
+		_card(150.0, 280.0, 1000.0, [tr("Getting the replay ready") + ".".repeat(int(_t * 2.0) % 4)], UiKit.BLUE)
+		u.hints([[Controls.glyph("menu_back"), tr("Cancel")]])
+		return
+	if r.replays_loading:
+		_card(150.0, 280.0, 1000.0, [tr("Loading") + ".".repeat(int(_t * 2.0) % 4)], UiKit.BLUE)
+	elif rows.is_empty():
+		_card(150.0, 280.0, 1400.0, [tr("Nobody is playing right now.") if m.rp_tab == 1 else tr("Your matches played on the ranked server show up here (the last ones, for a week).")], UiKit.BLUE)
+	for i in mini(rows.size(), 10):
+		var row: Dictionary = rows[i]
+		var ry := 270.0 + i * 70.0
+		var on_it: bool = i == m.rp_cursor
+		var o := on("rp%d" % i, on_it)
+		u.slant(150.0, ry, 1500.0, 60.0, UiKit.PANEL.lerp(UiKit.BLUE, 0.5 * o))
+		zone("rprow", i, 150.0, ry, 1500.0, 60.0)
+		if m.rp_tab == 1:
+			u.text_fit(190.0, ry + 12.0, "%s  vs  %s" % [str(row.host), str(row.guest)], 900.0, 32.0, UiKit.INK, u.heavy)
+			u.text(1560.0, ry + 14.0, tr("rating %d") % int(row.rating) + ("  " + tr("friendly") if row.get("friendly", false) else ""), 26.0, UiKit.SOFT, u.bold, 1)
+		else:
+			u.text_fit(190.0, ry + 12.0, tr("vs %s") % str(row.opponent), 700.0, 32.0, UiKit.INK, u.heavy)
+			var res := tr("Victory") if row.get("won") == true else (tr("Defeat") if row.get("won") == false else tr("..."))
+			u.text(1000.0, ry + 14.0, res, 28.0, UiKit.YELLOW if row.get("won") == true else UiKit.SOFT, u.heavy)
+			u.text(1560.0, ry + 14.0, Time.get_datetime_string_from_unix_time(int(row.when), true).left(16) + ("  " + tr("friendly") if row.get("friendly", false) else ""), 24.0, UiKit.SOFT, u.bold, 1)
+	u.hints([[Controls.glyph("jump"), tr("Watch")], [Controls.glyph("move_left"), tr("Mine / Live")], [Controls.glyph("menu_back"), tr("Back")]])
+
+
+## Friendly match: create a private room (you get a code) or join a friend's with their code.
+## Nobody's rating changes.
+func _room() -> void:
+	_header(tr("Friendly match"), UiKit.BLUE)
+	var y := 190.0
+	var o0 := on("room_create", m.room_focus == 0)
+	u.slant(150.0, y, 760.0, 430.0, UiKit.PANEL.lerp(UiKit.BLUE, 0.35 * o0), UiKit.TALL)
+	u.slant(150.0, y, 14.0, 430.0, UiKit.BLUE, UiKit.TALL)
+	zone("roomcreate", 0, 150.0, y, 760.0, 430.0)
+	u.text(220.0, y + 28.0, tr("YOU HAVE A FRIEND NEARBY"), 24.0, UiKit.SOFT, u.bold)
+	u.title(530.0, y + 150.0, tr("CREATE A ROOM"), 80.0, UiKit.INK, 0, 680.0)
+	u.text_fit(530.0, y + 280.0, tr("You get a code. Your friend types it here and you play at once."), 660.0, 28.0, UiKit.SOFT, u.bold, 0)
+	u.text(530.0, y + 342.0, tr("F8  DRAFT (BAN AND PICK): %s") % (tr("ON") if m.room_draft else tr("OFF")), 26.0, UiKit.YELLOW if m.room_draft else UiKit.SOFT, u.heavy, 0)
+	u.text(530.0, y + 382.0, tr("F10  2 VS 2, FOUR PLAYERS: %s") % (tr("ON") if m.room_team else tr("OFF")), 26.0, UiKit.YELLOW if m.room_team else UiKit.SOFT, u.heavy, 0)
+	var o1 := on("room_join", m.room_focus == 1)
+	u.slant(950.0, y, 830.0, 430.0, UiKit.PANEL.lerp(UiKit.BLUE, 0.35 * o1), UiKit.TALL)
+	u.slant(950.0, y, 14.0, 430.0, UiKit.BLUE, UiKit.TALL)
+	zone("roomcode", 0, 950.0, y, 830.0, 300.0)
+	u.text(1020.0, y + 28.0, tr("YOUR FRIEND GAVE YOU A CODE"), 24.0, UiKit.SOFT, u.bold)
+	for i in 5:
+		var cx := 1030.0 + i * 140.0
+		var ch: String = m.room_input.substr(i, 1)
+		var here: bool = m.room_focus == 1 and i == mini(m.room_input.length(), 4)
+		u.slant(cx, y + 100.0, 120.0, 150.0, UiKit.DARK.lerp(UiKit.BLUE, 0.4 if here else 0.0))
+		u.title(cx + 60.0, y + 118.0, ch if ch != "" else "·", 100.0, UiKit.INK if ch != "" else Color(UiKit.INK, 0.25), 0, 110.0)
+	var ready: bool = m.room_input.length() == 5
+	u.slant(1030.0, y + 320.0, 700.0, 80.0, UiKit.BLUE if ready and not m.room_busy else UiKit.PANEL_HI)
+	zone("roomgo", 0, 1030.0, y + 320.0, 700.0, 80.0)
+	u.title(1380.0, y + 330.0, (tr("JOIN") if not m.room_busy else tr("WAIT") + ".".repeat(int(_t * 2.0) % 4)), 52.0, UiKit.INK, 0, 640.0)
+	if m.room_msg != "":
+		_card(150.0, 660.0, 1630.0, ["!" + m.room_msg], UiKit.RED)
 	else:
-		u.hints([[tr("Enter"), tr("Connect")], [tr("Esc"), tr("Back")]])
+		u.text_fit(150.0, 665.0, tr("A friendly match does not change anyone's rating. Both of you need the same version of the game."), 1630.0, 26.0, UiKit.SOFT, u.bold)
+	u.hints([[tr("Tab"), tr("Create / Code")], [tr("Enter"), tr("Go")], [tr("Esc"), tr("Back")]])
+
+
+## Log in, create an account (name, email, password) or, for an account made before logins
+## existed, add an email and a password. Typed on the keyboard; fields and buttons click too.
+func _account() -> void:
+	var mode: String = m.acc_mode
+	var secure := mode == "secure"
+	_header(tr("Secure your account") if secure else tr("Account"), UiKit.ORANGE)
+	var x := 425.0
+	var y := 170.0
+	if not secure:
+		for i in 2:
+			var here: bool = (mode == "register") == (i == 1)
+			var tx := x + i * 540.0
+			u.slant(tx, y, 530.0, 70.0, UiKit.ORANGE if here else UiKit.PANEL)
+			zone("acctab", i, tx, y, 530.0, 70.0)
+			u.title(tx + 265.0, y + 8.0, tr("CREATE ACCOUNT") if i == 1 else tr("LOG IN"), 40.0, UiKit.DARK if here else UiKit.INK, 0, 480.0)
+		y += 100.0
+	var fields: Array = m.acc_fields()
+	var labels := {"name": tr("ACCOUNT NAME") if mode == "register" else tr("ACCOUNT NAME OR EMAIL"), "email": tr("EMAIL"),
+		"password": tr("PASSWORD"), "password2": tr("REPEAT THE PASSWORD")}
+	for i in fields.size():
+		var key: String = fields[i]
+		var here: bool = i == m.acc_field
+		var o := on("acc_%d" % i, here)
+		var by := y + i * 118.0
+		u.slant(x, by, 1070.0, 104.0, UiKit.PANEL.lerp(UiKit.ORANGE, 0.3 * o))
+		u.slant(x, by, 14.0, 104.0, UiKit.ORANGE if here else UiKit.SOFT)
+		zone("accfield", i, x, by, 1070.0, 104.0)
+		u.text(x + 44.0, by + 10.0, labels[key], 22.0, UiKit.SOFT, u.bold)
+		var val: String = str(m.acc[key])
+		var shown := "*".repeat(val.length()) if key.begins_with("password") else val
+		u.text_fit(x + 44.0, by + 40.0, shown, 960.0, 46.0, UiKit.INK, u.heavy)
+		if here and not m.acc_busy:
+			var cw := minf(u.width(shown, 46.0, u.heavy), 960.0)
+			u.rect(x + 50.0 + cw, by + 88.0, 30.0, 6.0, Color(UiKit.YELLOW, 0.6 + 0.4 * sin(_t * TAU * 0.9)))
+	var gy := y + fields.size() * 118.0 + 6.0
+	var go_text := tr("SAVE") if secure else (tr("CREATE ACCOUNT") if mode == "register" else tr("LOG IN"))
+	if m.acc_busy:
+		go_text = tr("WAIT") + ".".repeat(int(_t * 2.0) % 4)
+	u.slant(x, gy, 1070.0, 90.0, UiKit.ORANGE.lerp(UiKit.YELLOW, 0.2 * (0.5 + 0.5 * sin(_t * TAU * 0.6))))
+	zone("accgo", 0, x, gy, 1070.0, 90.0)
+	u.title(x + 535.0, gy + 12.0, go_text, 54.0, UiKit.DARK, 0, 1000.0)
+	var note := tr("Your email is only for your account: other players never see it.") if mode != "login" else tr("No account yet? Press F2 or click Create account.")
+	if secure:
+		note = tr("Your account was made before passwords existed. Add them to keep it safe and to play on other computers.")
+	if m.acc_msg != "":
+		_card(x, gy + 110.0, 1070.0, ["!" + m.acc_msg], UiKit.RED)
+	else:
+		u.text_fit(x + 10.0, gy + 112.0, note, 1050.0, 24.0, UiKit.SOFT, u.bold)
+	var hints: Array = [[tr("Tab"), tr("Next field")], [tr("Enter"), tr("Continue")]]
+	if not secure:
+		hints.append([tr("F2"), tr("Log in / Create account")])
+	hints.append([tr("Esc"), tr("Back")])
+	u.hints(hints)
 
 
 # ---------------------------------------------------------------- selection
@@ -395,6 +594,7 @@ func _selection() -> void:
 	_header(title, UiKit.ORANGE if m.ranked_room() else _side_color(1 if m.sel_phase == "p2" else 0))
 	if m.ranked_room():
 		_ranked_banner()
+		_team_strip()
 	# The stage, always at hand: its picture and name, top right.
 	var st: String = m.choice.stage
 	u.slant(1500.0, 30.0, 360.0, 92.0, UiKit.DARK)
@@ -417,7 +617,7 @@ func _selection() -> void:
 		if m.online and m.main.net and m.main.net.host:
 			items.push_front([Controls.glyph("mov2"), tr("Stage")])
 	if m.online and m.main.net:
-		u.text(70.0, 1030.0, "Ping %d ms" % m.main.net.ping_ms(), 22.0, UiKit.SOFT, u.bold)
+		u.text(70.0, 1030.0, m.main.net.ping_label(), 22.0, UiKit.SOFT, u.bold)
 	if m.online and m.version_mismatch():
 		var warn := tr("Your rival has another version (%s, yours %s): use the same package to play.") % [
 			m.rival_version if m.rival_version != "?" else tr("an old one"), Menu.version()]
@@ -476,6 +676,38 @@ func _wall(list: Array, setup: float) -> void:
 			_token(tx, y + 8.0, "CPU", UiKit.GREY)
 		if m.online and sp == m.rival_choice_id:
 			_token(tx, y + 8.0, "2P", UiKit.BLUE)
+
+
+## A 2 vs 2's selection: the three other players, each with what they have picked and whether they are ready.
+func _team_strip() -> void:
+	var c: Net = m.main.net
+	if not (c is ArenaClient and c.players() == 4):
+		return
+	var r: Ranked = m.main.ranked
+	var ac: ArenaClient = c
+	var others: Array = []
+	var ally := ac.ally_slot()
+	for s in ac.enemy_slots() + [ally]:
+		others.append(s)
+	for i in others.size():
+		var s: int = others[i]
+		var is_ally: bool = s == ally
+		var pk: Dictionary = m.team_picks.get(s, {})
+		var nm := str(pk.get("name", ""))
+		if nm == "":
+			var rec: Array = r.allies if is_ally else r.enemies
+			var idx := 0 if is_ally else ac.enemy_slots().find(s)
+			if idx >= 0 and idx < rec.size():
+				nm = str(rec[idx].get("name", "?"))
+		var sp := str(pk.get("species", ""))
+		var x := 440.0 + i * 360.0
+		var col: Color = UiKit.GREEN if is_ally else UiKit.RED
+		u.slant(x, 1008.0, 344.0, 60.0, Color(col, 0.85 if bool(pk.get("ready", false)) else 0.35))
+		u.text_fit(x + 24.0, 1012.0, ("%s: %s" % [tr("ALLY") if is_ally else tr("RIVAL"), nm]).to_upper(), 290.0, 20.0, UiKit.INK, u.heavy)
+		var line := tr("Choosing...")
+		if sp != "" and Roster.POKEMON.has(sp):
+			line = tr(Roster.POKEMON[sp].display_name) + ("  - " + tr("READY") if bool(pk.get("ready", false)) else "")
+		u.text_fit(x + 24.0, 1038.0, line, 290.0, 22.0, Color(UiKit.INK, 0.85), u.bold)
 
 
 func _token(x: float, y: float, label: String, col: Color) -> float:

@@ -538,6 +538,15 @@ func _touches(g: Hit, o: Node):
 ## Applies a hit to a target. Returns the result ("hit", "armor", "dodged",
 ## "detect"...) or "" if nothing happened.
 func apply(g: Hit, o: Node, point: Vector3) -> String:
+	# A 2 vs 2: nothing hurts the ally (shots and areas go through them).
+	if main.fighters.size() > 2 and g.user is Fighter:
+		var victim_team := -1
+		if o is Fighter:
+			victim_team = o.team
+		elif o is Decoy and o.user is Fighter:
+			victim_team = o.user.team
+		if victim_team == g.user.team and o != g.user:
+			return ""
 	# Streams (hits that repeat): from the second impact on it counts as "flow".
 	var flow := g.interval > 0.0 and g.hit_list.has(o.get_instance_id())
 	g.hit_list[o.get_instance_id()] = clock

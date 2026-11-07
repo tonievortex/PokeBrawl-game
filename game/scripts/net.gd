@@ -27,6 +27,7 @@ const TYPES := ["normal", "fire", "water", "grass", "electric", "ice", "fighting
 	"flying", "psychic", "bug", "rock", "ghost", "dragon", "dark", "steel", "fairy"]
 const P_STATE := 1
 const P_EVENT := 2
+const RECORD_BYTES := 113          # one Pokémon in write_fighter / _apply_state
 
 var main: Node
 var peer: ENetMultiplayerPeer
@@ -40,10 +41,6 @@ var in_battle := false
 ## States of the rival's old round (still arriving after we restarted) are dropped, else
 ## its knocked-out Pokémon from the last battle would end the new one at once.
 var epoch := 0
-## Which round of this battle's room we are in: a rematch starts a new one, on both sides.
-## States of the rival's old round (still arriving after we restarted) are dropped, else
-## its knocked-out Pokémon from the last battle would end the new one at once.
-var round := 0
 var local: Fighter              # your own Pokémon
 var remote: Fighter             # the rival's copy
 var frame := 0
@@ -166,6 +163,20 @@ func relay_registered() -> bool:
 	return proxy != null and proxy.registered
 
 
+## How the packets travel, for the ping label: "direct" (a normal connection: the fastest, also
+## when there is no proxy at all) or "relay" (the detour through the ranking server).
+func path() -> String:
+	return "relay" if proxy != null and not proxy.direct else "direct"
+
+
+## "Ping 35 ms", with how the packets travel when there is a proxy ("direct" or "relay").
+func ping_label() -> String:
+	var text := "Ping %d ms" % ping_ms()
+	if proxy != null:
+		text += "  (%s)" % path()
+	return text
+
+
 func close() -> void:
 	if peer:
 		peer.close()
@@ -274,6 +285,9 @@ func _physics_process(delta: float) -> void:
 	_t += delta
 	if peer == null:
 		return
+	# Through the proxy: what arrived from the other player goes to ENet before it polls...
+	if proxy:
+		proxy.pump(delta)
 	peer.poll()
 	# Simulated delayed output.
 	var i := 0
@@ -303,6 +317,9 @@ func _physics_process(delta: float) -> void:
 	if in_battle and local:
 		frame += 1
 		_send(0, _pack())
+	# ...and what ENet just sent goes out at once (not a frame later).
+	if proxy:
+		proxy.pump(0.0)
 
 
 func _receive(pkt: PackedByteArray) -> void:
@@ -330,13 +347,19 @@ func _receive(pkt: PackedByteArray) -> void:
 # ---------------------------------------------------------------- state
 
 func _pack() -> PackedByteArray:
-	var l := local
-	var c := l.ctrl
 	var b := StreamPeerBuffer.new()
 	b.put_u8(P_STATE)
 	b.put_u32(frame)
 	b.put_u8(epoch & 255)
-	b.put_u8(round & 255)
+	write_fighter(b, local)
+	return b.data_array
+
+
+## What one Pokémon puts into a state packet: its input (what a copy needs to do the same)
+## and its real state (to correct the copy). Used by the players' packets and by the match
+## server's snapshots (113 bytes per Pokémon).
+static func write_fighter(b: StreamPeerBuffer, l: Fighter) -> void:
+	var c := l.ctrl
 	# Input: what the copy needs to do the same.
 	b.put_float(c.move_input.x)
 	b.put_float(c.move_input.y)
@@ -370,14 +393,11 @@ func _pack() -> PackedByteArray:
 	b.put_u8(l.boosted_hits)
 	b.put_u8(maxi(TYPES.find(l.types[0]), 0))
 	b.put_u8(TYPES.find(l.types[1]) + 1 if l.types.size() > 1 else 0)
-	return b.data_array
 
 
 func _read_state(b: StreamPeerBuffer) -> void:
 	var f := b.get_u32()
 	if b.get_u8() != (epoch & 255):
-		return   # the rival's other round (before or after a rematch)
-	if b.get_u8() != (round & 255):
 		return   # the rival's other round (before or after a rematch)
 	if f <= _last_frame_other and _last_frame_other - f < 1000000:
 		return   # old or repeated
@@ -385,18 +405,31 @@ func _read_state(b: StreamPeerBuffer) -> void:
 	if remote == null or not is_instance_valid(remote):
 		return
 	states_applied += 1
-	var r := remote
+	_apply_state(remote, b, _seen_list)
+
+
+## Reads one Pokémon's record (what write_fighter wrote) into its copy `r`: its input is fed to
+## the copy and its real state is kept for _net_correct. `seen` holds the press counters last
+## seen for this Pokémon. Used for the rival's packets and for the match server's snapshots.
+## With feed_input false (your own Pokémon in the ranked arena, which already runs on your own
+## keys) only the real state is taken.
+func _apply_state(r: Fighter, b: StreamPeerBuffer, seen: Dictionary, feed_input := true) -> void:
 	var c := r.ctrl
-	c.move_input = Vector2(b.get_float(), b.get_float())
-	c.yaw = b.get_float()
+	var mv := Vector2(b.get_float(), b.get_float())
+	var yaw := b.get_float()
+	if feed_input:
+		c.move_input = mv
+		c.yaw = yaw
 	var mask := b.get_u16()
 	# Estimated one-way delay, in frames: whatever starts is fast-forwarded by it.
 	var lead := int(round(_outbound() * 60.0))
 	for k in ACTIONS.size():
 		var a: String = ACTIONS[k]
 		var n := b.get_u8()
-		var new_ones := (n - int(_seen_list[a]) + 256) % 256
-		_seen_list[a] = n
+		var new_ones := (n - int(seen.get(a, 0)) + 256) % 256
+		seen[a] = n
+		if not feed_input:
+			continue
 		if new_ones > 0 and new_ones < 30:
 			c.press(a)
 			r.net_lead = lead

@@ -3,11 +3,9 @@ extends Node
 ## Menus: white and clean like Sword and Shield's, laid out like Smash Ultimate's. The
 ## stage is not behind them: it is only built when the battle starts. Screens:
 ##   title       the logo; A to enter
-##   main        Battle, Online, Training, Moves, Options, Quit
-##   online      Host game, Join, Back
-##   waiting     host waiting: its IPs and whether the router opened the port
-##   join        type the IP (keyboard, or digit by digit with the gamepad)
-##   connecting  trying to join someone else's game
+##   main        Battle, Ranked, Training, Moves, Options, Quit
+##   account     log in or create an account (Ranked needs one)
+##   ranked      rating, the ranking, and the search for a rival (the server runs the fight)
 ##   selection   Pokémon grid on top, each side's pick below with its moves, and the
 ##               battle's options (stage, difficulty, edit moves, fight). Online: each
 ##               picks their own and the host picks the stage
@@ -27,16 +25,12 @@ const STAGE_TEXT := {"night": "A Galar stadium at night, packed and walled all r
 	"league": "The League's coliseum. The field closes in bit by bit: outside it you lose HP."}
 const COLUMNS := 5
 const MAIN_MENU := [["combat", "Battle", "Against the AI. Pick your Pokémon, the rival and the difficulty."],
-	["online", "Online", "1 vs 1 with a friend over the internet."],
+	["ranked", "Ranked", "Rated 1 vs 1 against other players: it looks for a rival right away. The server keeps your rating and the ranking."],
 	["training", "Training", "Still or active rival, no rush. R resets, T stops or frees the rival."],
 	["moves", "Moves", "Pick each Pokémon's four moves and its ability, and see what each one does."],
 	["options", "Options", "Controls, sound, screen and language."],
 	["quit", "Quit", "Close the game."],
 	["profile", "Profile", "Your trainer and your name. Online, your rival sees them."]]
-const ONLINE := [["create", "Host game", "Your friend joins with your IP. Port 7777 (UDP)."],
-	["ranked", "Ranked", "Rated 1 vs 1 against other players: it looks for a rival right away. The server keeps your rating and the ranking."],
-	["back", "Back", ""]]
-const IP_CHARS := "0123456789."
 ## The profile's name: up to NAME_MAX of these (with the pad, each letter goes round them).
 const NAME_MAX := 12
 ## The nickname asked for the first time: at least this many characters.
@@ -48,10 +42,9 @@ const PROFILE_COLUMNS := 3
 const NAME_KEYS := [["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"], ["A", "S", "D", "F", "G", "H", "J", "K", "L", "Ñ"],
 	["Z", "X", "C", "V", "B", "N", "M", "-", "_", "."], ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
 	["shift", "space", "del", "done"]]
-## The main and online menus are tiles of different sizes (MenuDraw): where each arrow goes
+## The main menu is a wall of tiles of different sizes (MenuDraw): where each arrow goes
 ## from each one ([up, down, left, right], -1 stays).
 const MAIN_NAV := [[-1, -1, -1, 1], [6, 3, 0, 2], [6, 4, 1, -1], [1, -1, 0, 4], [2, 5, 3, -1], [4, -1, 3, -1], [-1, 2, 1, -1]]
-const ONLINE_NAV := [[-1, -1, -1, 1], [-1, 2, 0, -1], [1, -1, 0, -1]]
 
 var main: Node
 var is_open := false
@@ -67,7 +60,31 @@ var rival_loadout := {}          # the online rival's moves and ability (sent wi
 var rival_trainer := ""          # and its trainer
 var rival_ready := false
 var message := ""                # notices (connection errors, disconnects), already translated
-var ip := ""
+## The account screen (log in / create an account / add an email and password to an old
+## account): typed on the keyboard, the mouse clicks its fields and buttons.
+var acc_mode := "login"           # "login", "register" or "secure"
+var acc_field := 0
+var acc := {"name": "", "email": "", "password": "", "password2": ""}
+var acc_msg := ""
+var acc_busy := false
+## The friendly-match screen (private rooms): create a room, or type a friend's code.
+var room_focus := 0               # 0 create, 1 the code field
+var room_input := ""
+var room_msg := ""
+var room_busy := false
+## The replays screen: my latest matches, or the ones being played now.
+var rp_tab := 0                   # 0 my replays, 1 live
+var rp_cursor := 0
+## The draft (ban and pick) of a draft match, as the server tells it.
+var draft := {}
+var draft_cursor := 0
+var draft_my_ban := ""
+var draft_at := 0.0               # when the last state came (the countdown runs from then)
+var room_draft := false           # the room being made is a draft
+var room_team := false            # ...or a 2 vs 2 (four players)
+var team_picks := {}              # a 2 vs 2's selection: what each other slot has chosen {slot: {name, species, ready}}
+const ROOM_CHARS := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+const ACC_LIMITS := {"name": 16, "email": 120, "password": 128, "password2": 128}
 var confirm := {}                # a yes/no question on top: {text, yes (Callable), on (0 no, 1 yes)}
 var portraits := {}               # species -> Texture2D (grid icons)
 var enter_t := 0.0               # time on this screen (entry animations)
@@ -98,8 +115,6 @@ var _back_click := false         # a right click: back, this frame
 
 
 func _ready() -> void:
-	var saved := _load_ip()
-	ip = saved if saved != "" else "192.168.1."
 	draw = MenuDraw.new()
 	draw.m = self
 
@@ -147,6 +162,11 @@ func close() -> void:
 
 
 func _go(p: String) -> void:
+	# Ranked needs an account: without one the account screen comes first (tests, which
+	# have --ranked_account, make theirs by themselves).
+	if p == "ranked" and not main.ranked.logged_in() and not main.ranked.auto_account():
+		account_open("login")
+		return
 	screen = p
 	main.music.play(p if p in ["selection", "vs", "moves"] else "menu")
 	cursor = 0
@@ -187,6 +207,16 @@ func online_connected() -> void:
 	rival_version = ""
 	rival_ready = false
 	message = ""
+	if main.ranked.draft_match and main.net is ArenaClient:
+		# A draft: ban and pick first; the usual selection (moves, ready) comes after.
+		draft = {}
+		draft_cursor = 0
+		draft_my_ban = ""
+		if not is_open:
+			open_menu("draft")
+		else:
+			_go("draft")
+		return
 	if not is_open:
 		open_menu("selection")
 	else:
@@ -197,7 +227,7 @@ func disconnected(reason: String) -> void:
 	online = false
 	message = reason
 	# A ranked match that ended with the rival leaving: the result is on the Ranked screen.
-	open_menu("ranked" if main.ranked.consume_return() else "online")
+	open_menu("ranked" if main.ranked.consume_return() else "main")
 
 
 # ---------------------------------------------------------------- input
@@ -233,9 +263,12 @@ func _menu_frame(delta: float) -> void:
 			_vs_t = -1.0
 			var vs := _vs.duplicate()
 			close()
-			if not online:
-				main.set_stage(choice.stage)
-			main.start_battle(vs[0], vs[1], choice.diff, rival_loadout if online else {}, rival_trainer if online else "")
+			if main.net is ArenaClient:
+				main.start_arena_battle()      # the server chose the stage and has both picks
+			else:
+				if not online:
+					main.set_stage(choice.stage)
+				main.start_battle(vs[0], vs[1], choice.diff, rival_loadout if online else {}, rival_trainer if online else "")
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		return
 	if not confirm.is_empty():
@@ -260,9 +293,9 @@ func _menu_frame(delta: float) -> void:
 						choice.mode = MAIN_MENU[cursor][0]
 						main.mode = choice.mode
 						_go("selection")
-					"online":
+					"ranked":
 						message = ""
-						_go("online")
+						_go("ranked")
 					"moves":
 						_edit_return = "main"
 						_go("moves")
@@ -275,36 +308,12 @@ func _menu_frame(delta: float) -> void:
 			elif _pressed("menu_back"):
 				_sound("back")
 				_go("title")
-		"online":
-			_move_nav(ONLINE_NAV)
-			if _accept():
-				_sound("ok")
-				match ONLINE[cursor][0]:
-					"create":
-						var err: String = main.start_net(true, "")
-						message = err
-						if err == "":
-							_go("waiting")
-					"join":
-						_go("join")
-						_key = Vector2i.ZERO
-					"back":
-						_go("main")
-					"ranked":
-						message = ""
-						_go("ranked")
-			elif _pressed("menu_back"):
-				_sound("back")
-				_go("main")
 		"ranked":
 			_ranked_input()
-		"waiting", "connecting":
-			if _pressed("menu_back"):
-				_sound("back")
-				main.close_net()
-				_go("online")
-		"join":
-			_edit_ip_pad()
+		"replays":
+			_replays_input()
+		"draft":
+			_draft_input()
 		"selection":
 			_selection()
 		"moves":
@@ -313,6 +322,351 @@ func _menu_frame(delta: float) -> void:
 			main.options.menu_input(self)
 		"profile":
 			_profile_input()
+
+
+## Opens the account screen. "mode": login, register or secure (an old account gets an email
+## and a password).
+func account_open(mode: String, msg := "") -> void:
+	acc_mode = mode
+	acc_field = 0
+	acc_msg = msg
+	acc_busy = false
+	acc.password = ""
+	acc.password2 = ""
+	if mode == "login":
+		acc.name = main.ranked.last_name if acc.name == "" else acc.name
+	if mode == "secure":
+		acc.email = ""
+	if not is_open:
+		open_menu("account")
+	else:
+		_go("account")
+
+
+## A draft state from the server: stage ban / pick / done, the bans and picks, whose turn, seconds left.
+func on_draft(d: Dictionary) -> void:
+	draft = d
+	draft_at = Time.get_ticks_msec() / 1000.0
+	if str(d.get("stage", "")) == "done" and screen == "draft":
+		var slot: int = main.net.slot
+		choice.p1 = str(d.picks[slot])
+		choice.p2 = str(d.picks[1 - slot])
+		_go("selection")
+		choice.p1 = str(d.picks[slot])
+		choice.p2 = str(d.picks[1 - slot])
+		_to_setup()
+
+
+func draft_left() -> float:
+	return maxf(0.0, float(draft.get("left", 0.0)) - (Time.get_ticks_msec() / 1000.0 - draft_at))
+
+
+## What the player may do now: "ban", "pick" or "" (waiting).
+func draft_action() -> String:
+	if draft.is_empty() or not main.net is ArenaClient:
+		return ""
+	var slot: int = main.net.slot
+	match str(draft.get("stage", "")):
+		"ban":
+			return "ban" if draft_my_ban == "" and not bool(draft.ban_done[slot]) else ""
+		"pick":
+			return "pick" if int(draft.turn) == slot else ""
+	return ""
+
+
+func draft_blocked(sp: String) -> bool:
+	if draft.is_empty():
+		return false
+	if str(draft.stage) == "pick" or str(draft.stage) == "done":
+		return draft.bans.has(sp) or draft.picks.has(sp)
+	return false
+
+
+func _draft_input() -> void:
+	var list := pokemon_list()
+	var before := draft_cursor
+	if _pressed("move_left"):
+		draft_cursor = (draft_cursor + list.size() - 1) % list.size()
+	elif _pressed("move_right"):
+		draft_cursor = (draft_cursor + 1) % list.size()
+	elif _pressed("move_up"):
+		draft_cursor = (draft_cursor + list.size() - COLUMNS) % list.size()
+	elif _pressed("move_down"):
+		draft_cursor = (draft_cursor + COLUMNS) % list.size()
+	if draft_cursor != before:
+		_sound("move")
+	if _accept():
+		_draft_confirm(list[draft_cursor])
+	elif _pressed("menu_back"):
+		_sound("back")
+		ask(tr("Leave the match? You will be disconnected."), func():
+			main.close_net()
+			online = false
+			_go("ranked"))
+
+
+func _draft_confirm(sp: String) -> void:
+	var action := draft_action()
+	if action == "ban":
+		draft_my_ban = sp
+		main.net.send_event({"t": "ban", "species": sp})
+		_sound("ok")
+	elif action == "pick" and not draft_blocked(sp):
+		main.net.send_event({"t": "pick", "species": sp})
+		_sound("ok")
+
+
+func replays_open(tab: int) -> void:
+	rp_tab = tab
+	rp_cursor = 0
+	main.ranked.load_replays(tab == 1)
+	_go("replays")
+
+
+func rp_rows() -> Array:
+	return main.ranked.live_matches if rp_tab == 1 else main.ranked.replays
+
+
+func _replays_input() -> void:
+	if main.net is ReplayPlayer:
+		if _pressed("menu_back"):
+			_sound("back")
+			main.close_net()
+		return
+	var rows := rp_rows()
+	if _pressed("move_left") or _pressed("move_right"):
+		_sound("move")
+		replays_open(1 - rp_tab)
+	elif _pressed("move_up") and not rows.is_empty():
+		rp_cursor = (rp_cursor + rows.size() - 1) % rows.size()
+		_sound("move")
+	elif _pressed("move_down") and not rows.is_empty():
+		rp_cursor = (rp_cursor + 1) % rows.size()
+		_sound("move")
+	elif _accept() and not rows.is_empty():
+		_sound("ok")
+		main.start_replay(int(rows[clampi(rp_cursor, 0, rows.size() - 1)].match_id), rp_tab == 1)
+	elif _pressed("menu_back"):
+		_sound("back")
+		main.ranked.skip_auto = true
+		_go("ranked")
+
+
+func room_open() -> void:
+	room_focus = 0
+	room_input = ""
+	room_msg = ""
+	room_busy = false
+	_go("room")
+
+
+func _room_key(k: InputEventKey) -> void:
+	if room_busy:
+		return
+	match k.keycode:
+		KEY_ESCAPE:
+			_sound("back")
+			main.ranked.skip_auto = true
+			_go("ranked")
+		KEY_TAB, KEY_LEFT, KEY_RIGHT:
+			room_focus = 1 - room_focus
+			_sound("move")
+		KEY_ENTER, KEY_KP_ENTER:
+			if room_focus == 0:
+				_room_create()
+			else:
+				_room_join()
+		KEY_BACKSPACE:
+			room_input = room_input.substr(0, room_input.length() - 1)
+			room_focus = 1
+		KEY_V:
+			if k.ctrl_pressed:
+				room_focus = 1
+				for ch in DisplayServer.clipboard_get().strip_edges().to_upper():
+					if ROOM_CHARS.contains(ch) and room_input.length() < 5:
+						room_input += ch
+			elif k.unicode > 0:
+				_room_type(k)
+		_:
+			if k.unicode > 0:
+				_room_type(k)
+
+
+func _room_type(k: InputEventKey) -> void:
+	var ch := char(k.unicode).to_upper()
+	if ROOM_CHARS.contains(ch) and room_input.length() < 5:
+		room_input += ch
+		room_focus = 1
+		room_msg = ""
+
+
+func _room_create() -> void:
+	_sound("ok")
+	main.ranked.skip_auto = true
+	main.ranked.room_create(room_draft, room_team)
+	_go("ranked")
+
+
+func _room_join() -> void:
+	if room_input.length() != 5:
+		room_msg = tr("A room code has 5 characters.")
+		return
+	room_busy = true
+	room_msg = ""
+	_sound("ok")
+	main.ranked.room_join(room_input, _room_done)
+
+
+func _room_done(ok: bool, err: String) -> void:
+	room_busy = false
+	if ok:
+		main.ranked.skip_auto = true
+		_go("ranked")
+	else:
+		room_msg = err
+
+
+func acc_fields() -> Array:
+	match acc_mode:
+		"register":
+			return ["name", "email", "password", "password2"]
+		"secure":
+			return ["email", "password", "password2"]
+	return ["name", "password"]
+
+
+func _acc_char_ok(key: String, ch: String) -> bool:
+	var code := ch.unicode_at(0)
+	match key:
+		"name":
+			# A name when registering; at login it can be the email too.
+			return (code >= 48 and code <= 57) or (code >= 65 and code <= 90) or (code >= 97 and code <= 122) or ch in ["_", "-"] \
+				or (acc_mode == "login" and (ch in ["@", "."] or code == 43))
+		"email":
+			return code > 32 and code < 127
+	return code >= 32 and code != 127
+
+
+func _account_key(k: InputEventKey) -> void:
+	if acc_busy:
+		return
+	var fields := acc_fields()
+	var key: String = fields[acc_field]
+	match k.keycode:
+		KEY_ESCAPE:
+			_sound("back")
+			_go("ranked" if acc_mode == "secure" else "main")
+		KEY_TAB:
+			acc_field = (acc_field + (fields.size() - 1 if k.shift_pressed else 1)) % fields.size()
+			_sound("move")
+		KEY_UP:
+			acc_field = (acc_field + fields.size() - 1) % fields.size()
+			_sound("move")
+		KEY_DOWN:
+			acc_field = (acc_field + 1) % fields.size()
+			_sound("move")
+		KEY_ENTER, KEY_KP_ENTER:
+			if acc_field < fields.size() - 1:
+				acc_field += 1
+				_sound("move")
+			else:
+				_account_submit()
+		KEY_BACKSPACE:
+			acc[key] = str(acc[key]).substr(0, str(acc[key]).length() - 1)
+		KEY_F2:
+			if acc_mode != "secure":
+				account_switch("register" if acc_mode == "login" else "login")
+		KEY_V:
+			if k.ctrl_pressed:
+				for ch in DisplayServer.clipboard_get().strip_edges():
+					if _acc_char_ok(key, ch) and str(acc[key]).length() < int(ACC_LIMITS[key]):
+						acc[key] = str(acc[key]) + ch
+			elif k.unicode > 0:
+				_account_type(key, k)
+		_:
+			if k.unicode > 0:
+				_account_type(key, k)
+
+
+func _account_type(key: String, k: InputEventKey) -> void:
+	var ch := char(k.unicode)
+	if _acc_char_ok(key, ch) and str(acc[key]).length() < int(ACC_LIMITS[key]):
+		acc[key] = str(acc[key]) + ch
+		acc_msg = ""
+
+
+func account_switch(mode: String) -> void:
+	if acc_busy or mode == acc_mode:
+		return
+	acc_mode = mode
+	acc_field = 0
+	acc_msg = ""
+	# Creating an account starts from an empty name; logging in offers the last one used.
+	if mode == "register":
+		acc.name = ""
+	elif mode == "login" and acc.name == "":
+		acc.name = main.ranked.last_name
+	_sound("move")
+
+
+func _account_submit() -> void:
+	if acc_busy:
+		return
+	var name := str(acc.name).strip_edges()
+	var email := str(acc.email).strip_edges()
+	var pw := str(acc.password)
+	if acc_mode in ["login", "register"] and name == "":
+		acc_msg = tr("Type your account name.") if acc_mode == "register" else tr("Type your account name or email.")
+		acc_field = 0
+		return
+	if acc_mode == "register" and not _acc_name_ok(name):
+		acc_msg = tr("The name needs 3 to 16 letters, digits, _ or -.")
+		acc_field = 0
+		return
+	if acc_mode in ["register", "secure"] and not _acc_email_ok(email):
+		acc_msg = tr("That does not look like an email address.")
+		acc_field = acc_fields().find("email")
+		return
+	if acc_mode in ["register", "secure"] and pw.length() < 6:
+		acc_msg = tr("The password needs at least 6 characters.")
+		acc_field = acc_fields().find("password")
+		return
+	if acc_mode in ["register", "secure"] and pw != str(acc.password2):
+		acc_msg = tr("The two passwords are not the same.")
+		acc_field = acc_fields().find("password2")
+		return
+	if acc_mode == "login" and pw == "":
+		acc_msg = tr("Type your password.")
+		acc_field = 1
+		return
+	acc_busy = true
+	acc_msg = ""
+	_sound("ok")
+	main.ranked.account_submit(acc_mode, {"name": name, "email": email, "password": pw}, _account_done)
+
+
+func _account_done(ok: bool, err: String) -> void:
+	acc_busy = false
+	if not ok:
+		acc_msg = err
+		return
+	acc.password = ""
+	acc.password2 = ""
+	acc_msg = ""
+	main.ranked.skip_auto = false
+	_go("ranked")
+
+
+func _acc_name_ok(n: String) -> bool:
+	var rx := RegEx.new()
+	rx.compile("^[A-Za-z0-9_\\-]{3,16}$")
+	return rx.search(n) != null
+
+
+func _acc_email_ok(e: String) -> bool:
+	var rx := RegEx.new()
+	rx.compile("^[^@\\s]{1,64}@[^@\\s]{1,100}\\.[A-Za-z]{2,24}$")
+	return rx.search(e) != null and e.length() <= 120
 
 
 func _move_nav(nav: Array) -> void:
@@ -371,97 +725,30 @@ func _ranked_input() -> void:
 			elif _pressed("menu_back"):
 				_sound("back")
 				r.notice = ""
-				_go("online")
+				_go("main")
 		"searching":
 			if _pressed("menu_back"):
 				_sound("back")
 				r.cancel()
 				r.notice = ""
-				_go("online")
+				_go("main")
 		"connecting":
 			if _pressed("menu_back"):
 				_sound("back")
 				r.cancel()
 
 
+## Logs out of the account (the ranking client forgets its token) and shows the login screen.
+func _logout() -> void:
+	_sound("back")
+	main.ranked.logout()
+	acc.name = main.ranked.last_name
+	account_open("login")
+
+
 ## Whether the online room open now is a ranked match's (its selection shows both players).
 func ranked_room() -> bool:
 	return online and main.ranked.in_ranked_room()
-
-
-# ---------------------------------------------------------------- IP
-
-## On-screen keypad for the IP. With the gamepad: move between keys, A presses, B deletes
-## (and goes back when the IP is empty). With the keyboard: type it, Enter connects,
-## Ctrl+V pastes, Esc goes back. Both work at any time.
-const KEYPAD := [["1", "2", "3", "del"], ["4", "5", "6", "paste"], ["7", "8", "9", "clear"], [".", "0", "connect", "connect"]]
-
-
-func _edit_ip_pad() -> void:
-	var before := _key
-	if _pressed("move_left"):
-		_key.x = (_key.x + 3) % 4
-	elif _pressed("move_right"):
-		_key.x = (_key.x + 1) % 4
-	elif _pressed("move_up"):
-		_key.y = (_key.y + 3) % 4
-	elif _pressed("move_down"):
-		_key.y = (_key.y + 1) % 4
-	# "Connect" spans two keys: landing on its right half moves to its left half.
-	if _key.y == 3 and _key.x == 3:
-		_key.x = 2
-	if _key != before:
-		_sound("move")
-	if Controls.last_device != "keyboard":
-		if _accept():
-			_sound("ok")
-			_press_key(KEYPAD[_key.y][_key.x])
-		elif _pressed("menu_back"):
-			if ip.is_empty():
-				_sound("back")
-				_go("online")
-			else:
-				ip = ip.substr(0, ip.length() - 1)
-
-
-func key_label(k: String) -> String:
-	match k:
-		"del":
-			return "<-"
-		"paste":
-			return tr("Paste")
-		"clear":
-			return tr("Clear")
-		"connect":
-			return tr("Connect")
-	return k
-
-
-func key_on() -> Vector2i:
-	return _key
-
-
-func _press_key(k: String) -> void:
-	match k:
-		"del":
-			ip = ip.substr(0, ip.length() - 1)
-		"clear":
-			ip = ""
-		"paste":
-			_paste()
-		"connect":
-			_connect_peer()
-		_:
-			if ip.length() < 15:
-				ip += k
-
-
-func _paste() -> void:
-	var clean := ""
-	for ch in DisplayServer.clipboard_get().strip_edges():
-		if IP_CHARS.contains(ch):
-			clean += ch
-	ip = clean.substr(0, 15)
 
 
 func _unhandled_input(ev: InputEvent) -> void:
@@ -472,48 +759,38 @@ func _unhandled_input(ev: InputEvent) -> void:
 	if is_open and screen == "options":
 		main.options.menu_event(self, ev)
 		return
+	if is_open and screen == "room" and ev is InputEventKey and ev.pressed:
+		_room_key(ev)
+		get_viewport().set_input_as_handled()
+		return
+	if is_open and screen == "ranked" and ev is InputEventKey and ev.pressed and not ev.echo and ev.keycode == KEY_F4 \
+			and main.ranked.state == "idle" and main.ranked.can_search():
+		room_open()
+		return
+	if is_open and screen in ["ranked", "room"] and ev is InputEventKey and ev.pressed and not ev.echo and ev.keycode in [KEY_F8, KEY_F10] \
+			and (screen == "room" or main.ranked.state == "idle"):
+		_toggle_mode(ev.keycode == KEY_F10)
+		return
+	if is_open and screen == "ranked" and ev is InputEventKey and ev.pressed and not ev.echo and ev.keycode in [KEY_F6, KEY_F7] \
+			and main.ranked.state == "idle" and main.ranked.can_search():
+		replays_open(0 if ev.keycode == KEY_F6 else 1)
+		return
+	if is_open and screen == "account" and ev is InputEventKey and ev.pressed:
+		_account_key(ev)
+		get_viewport().set_input_as_handled()
+		return
+	if is_open and screen == "ranked" and ev is InputEventKey and ev.pressed and not ev.echo and main.ranked.state in ["idle", "searching"] \
+			and main.ranked.logged_in() and not main.ranked.loading:
+		if ev.keycode == KEY_F2:
+			_logout()
+			return
+		if ev.keycode == KEY_F3 and not bool(main.ranked.me.get("has_password", true)):
+			account_open("secure")
+			return
 	if is_open and screen in ["profile", "nick"] and name_edit and ev is InputEventKey and ev.pressed:
 		_type_name(ev)
 		get_viewport().set_input_as_handled()
 		return
-	if not is_open or screen != "join" or not (ev is InputEventKey) or not ev.pressed:
-		return
-	var k: InputEventKey = ev
-	if k.keycode == KEY_BACKSPACE:
-		ip = ip.substr(0, ip.length() - 1)
-	elif k.keycode == KEY_ESCAPE:
-		_go("online")
-	elif k.keycode in [KEY_ENTER, KEY_KP_ENTER]:
-		_connect_peer()
-	elif k.keycode == KEY_V and k.ctrl_pressed:
-		_paste()
-	elif k.unicode > 0 and IP_CHARS.contains(char(k.unicode)) and ip.length() < 15:
-		ip += char(k.unicode)
-	else:
-		return
-	get_viewport().set_input_as_handled()
-
-
-func _connect_peer() -> void:
-	if ip.count(".") != 3:
-		message = tr("The IP has four numbers separated by dots.")
-		return
-	_save_ip(ip)
-	var err: String = main.start_net(false, ip)
-	message = err
-	if err == "":
-		_go("connecting")
-
-
-func _load_ip() -> String:
-	var f := FileAccess.open("user://last_ip.txt", FileAccess.READ)
-	return f.get_as_text().strip_edges() if f else ""
-
-
-func _save_ip(text: String) -> void:
-	var f := FileAccess.open("user://last_ip.txt", FileAccess.WRITE)
-	if f:
-		f.store_string(text)
 
 
 # ---------------------------------------------------------------- selection
@@ -562,7 +839,7 @@ func _selection() -> void:
 			ask(tr("Leave the room? You will be disconnected."), func():
 				main.close_net()
 				online = false
-				_go("online"))
+				_go("ranked"))
 		elif sel_phase == "p2":
 			sel_phase = "p1"
 			cursor = maxi(list.find(choice.p1), 0)
@@ -921,7 +1198,7 @@ func shown_move() -> String:
 
 func _send_choice() -> void:
 	if main.net:
-		var d := {"t": "choice", "species": choice.p1, "ready": me_ready, "loadout": main.my_loadout(choice.p1), "trainer": main.options.trainer, "name": main.options.shown_name(),
+		var d := {"t": "choice", "species": choice.p1, "ready": me_ready, "loadout": main.my_loadout(choice.p1), "trainer": main.options.trainer, "name": main.online_name(),
 			"ver": Menu.version()}
 		if main.net.host:
 			d.stage = choice.stage            # so the rival sees the stage from the start
@@ -937,6 +1214,31 @@ static func version() -> String:
 ## Online: whether the rival plays another version (then the battle does not start).
 func version_mismatch() -> bool:
 	return rival_version != "" and rival_version != Menu.version()
+
+
+## F8 (draft) and F10 (2 vs 2) pick the kind of match, on the Ranked screen and in the room's: they exclude each other.
+func _toggle_mode(team: bool) -> void:
+	var r: Ranked = main.ranked
+	if screen == "room":
+		if team:
+			room_team = not room_team
+			room_draft = room_draft and not room_team
+		else:
+			room_draft = not room_draft
+			room_team = room_team and not room_draft
+	elif team:
+		r.team_pref = not r.team_pref
+		r.draft_pref = r.draft_pref and not r.team_pref
+	else:
+		r.draft_pref = not r.draft_pref
+		r.team_pref = r.team_pref and not r.draft_pref
+	_sound("move")
+
+
+## A 2 vs 2's selection: what another player (by the server's slot) has picked.
+func team_choice(slot: int, d: Dictionary) -> void:
+	team_picks[slot] = {"name": str(d.get("name", "")).substr(0, NAME_MAX), "species": str(d.get("species", "")),
+		"ready": bool(d.get("ready", false))}
 
 
 func rival_choice(sp: String, ready: bool, loadout := {}, trainer := "", rival := "", ver := "") -> void:
@@ -1132,11 +1434,46 @@ func _mouse(ev: InputEvent) -> void:
 	_hover(z)
 	if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
 		match z.kind:
-			"key":
-				_sound("ok")
-				_press_key(KEYPAD[_key.y][_key.x])
 			"nkey":
 				_press_name_key()
+			"accfield":
+				if not acc_busy:
+					acc_field = z.i
+					_sound("move")
+			"acctab":
+				account_switch("register" if z.i == 1 else "login")
+			"accgo":
+				_account_submit()
+			"logout":
+				_logout()
+			"friend":
+				room_open()
+			"draftpref":
+				_toggle_mode(false)
+			"teampref":
+				_toggle_mode(true)
+			"dpick":
+				var dl := pokemon_list()
+				if z.i < dl.size():
+					draft_cursor = z.i
+					_draft_confirm(dl[z.i])
+			"replays":
+				replays_open(z.i)
+			"rprow":
+				if main.net is not ReplayPlayer and z.i < rp_rows().size():
+					rp_cursor = z.i
+					_sound("ok")
+					main.start_replay(int(rp_rows()[z.i].match_id), rp_tab == 1)
+			"roomcreate":
+				if not room_busy:
+					room_focus = 0
+					_room_create()
+			"roomcode":
+				room_focus = 1
+			"roomgo":
+				_room_join()
+			"secure":
+				account_open("secure")
 			"confirm":
 				_clicked = z.i >= 0
 			"restore":
@@ -1198,7 +1535,7 @@ func _hover(z: Dictionary) -> void:
 		"opt":
 			if edit_phase == "list":
 				edit_cursor = z.i
-		"main", "online":
+		"main":
 			if screen == z.kind:
 				cursor = z.i
 		"pf":
@@ -1211,8 +1548,6 @@ func _hover(z: Dictionary) -> void:
 		"tab":
 			if screen == "selection" and sel_phase == "setup" and not (online and me_ready):
 				setup_cursor = z.i
-		"key":
-			_key = Vector2i(z.i % 4, z.i / 4)
 		"nkey":
 			name_key = Vector2i(z.i % 10, z.i / 10)
 	if [cursor, profile_cursor, setup_cursor, _key, name_key, edit_slot, edit_cursor, confirm.get("on")] != before:

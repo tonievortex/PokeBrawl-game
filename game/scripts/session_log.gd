@@ -28,6 +28,9 @@ var _battle_start := 0.0
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# A match server runs many fights and writes no player logs (its own log is the console's).
+	if main._args.has("server"):
+		return
 	DirAccess.make_dir_recursive_absolute("user://logs")
 	_prune()
 	var stamp := Time.get_datetime_string_from_system().replace(":", "-").replace("T", "_")

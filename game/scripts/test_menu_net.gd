@@ -1,15 +1,11 @@
 extends Node
-## Online test through the menu (two copies at once):
-##   godot --path game -- --test=menu_net --role=host --bot
-##   godot --headless --path game -- --test=menu_net --role=guest --bot
-## Each copy presses the buttons like a player: title, Online, Host game or Join
-## (types 127.0.0.1 on the keyboard), picks a Pokémon, ready, VS, battle. After the
-## first KO the host goes back to selection; both pick another, the host picks the floating
-## stage (the guest must get it too), another battle, and at
-## the end the host leaves: the guest must return to the online menu with the notice.
+## Ranked test through the menu (two copies at once; tools/test_ranked.py starts them):
+## each copy presses the buttons like a player: title, Ranked (the backend pairs them), picks a
+## Pokémon, ready, VS, battle, then the result and the way out. (Hosting a game by IP is no longer
+## in the menu: --host / --join on the command line still start a direct game, see test_net.gd.)
 ## Prints a MENU_NET_FINAL line to compare both copies.
 
-const CHOOSES := {"host": ["charizard", "gengar"], "guest": ["lucario", "pikachu"]}
+const CHOOSES := {"host": ["charizard", "gengar"], "guest": ["lucario", "pikachu"], "host2": ["blastoise", "scizor"], "guest2": ["greninja", "venusaur"]}
 
 var main: Node
 var role := "host"
@@ -35,8 +31,33 @@ var _last := {}                # HP and state of the last battle frame
 var _ranked := false
 var _ranked_done := false
 var _scenario := "accept"
+## --room=create|join (with --room_file=path): a private room instead of the ranked search. The
+## copy that creates it writes the code into the file, the other one reads it and joins.
+var _room_mode := ""
+var _room_file := ""
+var _room_started := false
+var _room_written := false
+var _replay_step := 0          # arena: after the result, the player opens the replay of the match and watches it
+var _replay_info := {}
+var _replay_pos := Vector3.ZERO
+var _replay_t := 0.0
+var _report_step := 0          # arena: F5, a reason, "sent" (the rival reported once, as a player would)
 var _rm_count := 0            # ranked battles finished in this room
 var _rm_sent := false         # the key of the current step was pressed
+## Smoothness of the rival's copy (the "teleports" players see): how many times it jumped
+## more than 1.5 m in one frame, and the biggest jump. And the ping seen during the battles.
+var _jumps := 0
+var _max_jump := 0.0
+var _prev_remote := Vector3.ZERO
+var _prev_remote_ok := false
+var _prev_own := Vector3.ZERO
+var _prev_own_ok := false
+var _own_jumps := 0
+var _max_own_jump := 0.0
+var _ping_sum := 0
+var _ping_n := 0
+var _last_path := ""          # "direct" or "relay": how the packets travelled in the last battle
+var _team_ok := false         # a 2 vs 2: the four fighters were built as they should
 
 
 func _ready() -> void:
@@ -44,6 +65,10 @@ func _ready() -> void:
 	role = main._args.get("role", "host")
 	_ranked = main._args.has("ranked")
 	_scenario = str(main._args.get("scenario", "accept"))
+	_room_mode = str(main._args.get("room", ""))
+	_room_file = str(main._args.get("room_file", ""))
+	if _room_mode != "":
+		main.ranked.skip_auto = true        # no ranked search by itself: this copy goes to the room screen
 
 
 func _step(text: String) -> void:
@@ -105,48 +130,44 @@ func _menu(m: Menu) -> void:
 			_step("title")
 			_press("menu_accept")
 		"main":
-			_step("main")
-			_go_to(m, m.MAIN_MENU, "online")
-		"online":
-			if _ranked:
-				_step("online: going to Ranked")
-				_go_to(m, m.ONLINE, "ranked")
-				return
-			if _combat_t >= 0.0:
-				_round_end()
-			if _round >= 2:
-				# After the disconnect: the notice must be on screen.
-				_step("back in Online: \"%s\"" % m.message)
-				_capture("disconnection")
-				_finish("" if m.message != "" else "no disconnect notice")
-				return
-			_step("online")
-			if role == "host":
-				_go_to(m, m.ONLINE, "create")
-			else:
-				m._go("join")        # joining by IP is not on the menu any more: straight to its screen
-		"waiting":
-			_step("waiting for the guest")
-			if m._t > 6.0:
-				_capture("waiting")
-		"join":
-			_step("join")
-			if not _typed:
-				_typed = true
-				for i in 20:
-					_key(KEY_BACKSPACE)
-				for ch in "127.0.0.1":
-					_key(KEY_PERIOD if ch == "." else (KEY_0 + int(ch)) as Key, ch)
-				_wait_t = 0.4
-				return
-			_capture("join")
-			_key(KEY_ENTER)
-			_wait_t = 0.5
-		"connecting":
-			_step("connecting")
+			_step("main: going to Ranked")
+			_go_to(m, m.MAIN_MENU, "ranked")
+		"draft":
+			_step("draft: %s" % str(m.draft.get("stage", "waiting")))
+			var dstage := str(m.draft.get("stage", ""))
+			if dstage == "ban" and m.draft_action() == "ban":
+				m._draft_confirm(m.pokemon_list()[0])
+			elif dstage == "pick" and m.draft_action() == "pick":
+				var dlist := m.pokemon_list()
+				for di in dlist.size():
+					if not m.draft_blocked(dlist[di]):
+						m._draft_confirm(dlist[di])
+						break
+				_wait_t = 0.6
 		"ranked":
 			var rk: Ranked = main.ranked
 			_step("ranked screen: %s (%s)" % [rk.state, str(rk.me.get("name", "no account yet"))])
+			if _room_mode != "" and not _room_started and rk.state == "idle" and rk.can_search():
+				if _room_mode == "create":
+					_room_started = true
+					m.room_open()
+					m._room_create()
+					return
+				if FileAccess.file_exists(_room_file):
+					var code := FileAccess.get_file_as_string(_room_file).strip_edges()
+					if code.length() == 5:
+						_room_started = true
+						m.room_open()
+						m.room_input = code
+						_step("joining room %s" % code)
+						m._room_join()
+						return
+			if _room_mode == "create" and not _room_written and rk.room_code != "":
+				_room_written = true
+				var f := FileAccess.open(_room_file, FileAccess.WRITE)
+				f.store_string(rk.room_code)
+				f.close()
+				_step("room %s open" % rk.room_code)
 			if rk.state == "searching":
 				_capture("ranked_search")
 		"selection":
@@ -210,11 +231,15 @@ func _combat(delta: float) -> void:
 	var r: Fighter = net.remote
 	if _combat_t < 0.0:
 		_combat_t = 0.0
+		_prev_remote_ok = false
 		_step("battle %d: me %s, rival %s, ping %d ms" % [_round + 1, l.species, r.species, net.ping_ms()])
 		_states_at_start = net.states_applied
 		var ridx := 0 if _ranked else _round      # a ranked rematch keeps the same Pokémon
 		var expected: Array = [CHOOSES[role][ridx], CHOOSES["guest" if role == "host" else "host"][ridx]]
-		if [l.species, r.species] != expected:
+		if net.players() == 4:
+			expected = [l.species, r.species]            # (a 2 vs 2: who the first rival is depends on the slots)
+			_team_check(net)
+		if not main.ranked.draft_match and [l.species, r.species] != expected:
 			_finish("species swapped: %s, expected %s" % [[l.species, r.species], expected])
 			return
 		# Both play on the stage the host picked.
@@ -222,16 +247,39 @@ func _combat(delta: float) -> void:
 		_step("stage %s" % main.arena.stage)
 		# Each side's moves: the rival's must be what it saved (it sends them with its choice).
 		_step("moves: me %s, rival %s" % [",".join(l.data.moves), ",".join(r.data.moves)])
-		if main.arena.stage != want_stage:
+		# (In the arena the server picks a random stage.)
+		if main.arena.stage != want_stage and not net is ArenaClient:
 			_finish("battle %d on stage %s, expected %s" % [_round + 1, main.arena.stage, want_stage])
 			return
 	_combat_t += delta
+	# The rival's copy must move smoothly: a jump of more than 1.5 m between two frames is a
+	# teleport on the player's screen (normal movement is under 0.6 m per frame). The first
+	# second is left out: the Pokémon are being put on their starting places then.
+	if _prev_remote_ok and main._end_t < 0.0 and _combat_t > 1.0:
+		var jump := r.global_position.distance_to(_prev_remote)
+		if jump > 1.5:
+			_jumps += 1
+			_max_jump = maxf(_max_jump, jump)
+	_prev_remote = r.global_position
+	_prev_remote_ok = main._end_t < 0.0
+	# Your own Pokémon too (the arena predicts it, the server corrects it: it must not jump).
+	if _prev_own_ok and main._end_t < 0.0 and _combat_t > 1.0:
+		var own_jump := l.global_position.distance_to(_prev_own)
+		if own_jump > 1.5:
+			_own_jumps += 1
+			_max_own_jump = maxf(_max_own_jump, own_jump)
+	_prev_own = l.global_position
+	_prev_own_ok = main._end_t < 0.0
+	if net.ping_ms() > 0:
+		_ping_sum += net.ping_ms()
+		_ping_n += 1
+	_last_path = net.path()
 	_last = {"me_ko": l.state == "ko", "my_hp": int(l.hp), "rival_hp": int(r.hp)}
 	if _combat_t > 3.0:
 		_capture("combat_%d" % (_round + 1))
 	# To avoid waiting for a whole battle: at 10 s each side drops itself to 1 HP
 	# (each copy controls its own); the next hit ends it.
-	if _combat_t > 10.0 and _combat_t - delta <= 10.0:
+	if _combat_t > 10.0 and _combat_t - delta <= 10.0 and not net is ArenaClient:
 		l.hp = minf(l.hp, 1.0)
 	# In sync: the rival's states keep arriving during the battle, also after "pick another".
 	if _combat_t > 8.0 and _combat_t - delta <= 8.0 and net.states_applied - _states_at_start < 120:
@@ -263,10 +311,96 @@ func _ranked_after() -> void:
 	var m: Menu = main.menu
 	# Out of the room already (the other one declined or left): the Ranked screen.
 	if main.net == null:
+		if m.is_open and m.screen == "replays":
+			m._go("ranked")             # out of the replay: back to Ranked, where the test ends
+			return
 		if m.is_open and m.screen == "ranked":
 			_step("on the Ranked screen: \"%s\"" % r.notice)
 			_capture("ranked_after")
 			_finish("")
+		return
+	# The arena has no rematch: once the server's result and the new rating are in, it is over.
+	if main.net is ArenaClient or (main.net is ReplayPlayer and _report_step == 3):
+		if r.result.is_empty():
+			return
+		_step("ranked result: %s (battle %d)" % [JSON.stringify(r.result), _rm_count])
+		_capture("ranked_result_arena")
+		match _report_step:
+			0:
+				_key(KEY_F5)
+				_report_step = 1
+				_wait_t = 0.4
+				return
+			1:
+				if r.report_state == "choose":
+					_capture("report_choose")
+					_key(KEY_1)
+					_report_step = 2
+					_wait_t = 0.4
+					return
+				_step("the report menu did not open")
+				_report_step = 3
+			2:
+				if r.report_state == "target":
+					_capture("report_target")
+					_key(KEY_1)          # a 2 vs 2: which player (the first of the three)
+					_wait_t = 0.4
+					return
+				if r.report_state != "sent":
+					return
+				_step("report sent")
+				_report_step = 3
+		if _report_step == 3 and _replay_step < 5:
+			match _replay_step:
+				0:
+					m.replays_open(0)
+					_replay_step = 1
+					_wait_t = 0.5
+				1:
+					if r.replays_loading:
+						return
+					_replay_info["listed"] = r.replays.size()
+					if r.replays.is_empty():
+						_replay_step = 5
+						return
+					_step("replays: %d listed" % r.replays.size())
+					main.start_replay(int(r.replays[0].match_id), false)
+					_replay_step = 2
+				2:
+					var rp = main.net
+					if not (rp is ReplayPlayer) or main.fighters.size() < 2 or not rp.in_battle:
+						_replay_t += 0.0167
+						if _replay_t > 30.0:
+							_step("the replay did not start")
+							_replay_step = 5
+						return
+					_replay_info["started"] = true
+					_replay_pos = main.fighters[0].global_position + main.fighters[1].global_position
+					_replay_t = 0.0
+					_replay_step = 3
+				3:
+					_replay_t += 0.0167
+					if _replay_t < 9.0:
+						return
+					var rp2: ReplayPlayer = main.net
+					var moved: bool = (main.fighters[0].global_position + main.fighters[1].global_position).distance_to(_replay_pos) > 0.5
+					_replay_info["moved"] = moved
+					_replay_info["frames"] = rp2.frames.size()
+					_replay_info["states"] = rp2.states_applied
+					_replay_info["position"] = snappedf(rp2.position, 0.1)
+					_step("watched the replay: %s" % JSON.stringify(_replay_info))
+					_capture("replay")
+					main.back_to_menu("replays")
+					_replay_step = 4
+					_wait_t = 0.4
+				4:
+					m._go("ranked")
+					_replay_step = 5
+					_wait_t = 0.4
+			return
+		if not _rm_sent:
+			_rm_sent = true
+			_press("jump")          # the only option: back to Ranked (then the check above finishes)
 		return
 	# Accepted: the new battle began (same room, a new match number). The rating of the first
 	# one is cleared by then, so this is checked before waiting for it.
@@ -297,6 +431,18 @@ func _ranked_after() -> void:
 		_press("jump" if _scenario == "accept" else "menu_back")
 
 
+## A 2 vs 2 on this screen: four Pokémon, mine and my team-mate's on team 0, the two rivals' on team 1, in the
+## order mine, rival, team-mate, rival; every one of them has its place in the slot list.
+func _team_check(net: Net) -> void:
+	var c: ArenaClient = net
+	var f: Array = main.fighters
+	var ok := f.size() == 4 and f[0].team == 0 and f[2].team == 0 and f[1].team == 1 and f[3].team == 1
+	ok = ok and c.slot_fighters.size() == 4 and c.slot_fighters[c.slot] == f[0] and c.slot_fighters[c.ally_slot()] == f[2]
+	ok = ok and main.hud._portraits.size() == 4 and main.trainers.size() == 4
+	_team_ok = ok
+	_step("2 vs 2 on screen: %s (slot %d, ally slot %d)" % ["ok" if ok else "WRONG", c.slot, c.ally_slot()])
+
+
 func _round_end() -> void:
 	var winner := "rival" if _last.get("me_ko", false) else "me"
 	_battles.append({"round": _round + 1, "winner": winner, "my_hp": _last.get("my_hp", -1), "rival_hp": _last.get("rival_hp", -1)})
@@ -310,11 +456,18 @@ func _finish(error: String) -> void:
 	if _end != "":
 		return
 	_end = "ok" if error == "" else error
-	var data := {"role": role, "result": _end, "battles": _battles, "steps": _steps.size()}
+	var data := {"role": role, "result": _end, "battles": _battles, "steps": _steps.size(),
+		"jumps": _jumps, "max_jump": snappedf(_max_jump, 0.1), "own_jumps": _own_jumps, "max_own_jump": snappedf(_max_own_jump, 0.1), "ping_avg": (_ping_sum / _ping_n) if _ping_n > 0 else 0,
+		"path": _last_path}
 	if _ranked:
 		data["ranked"] = main.ranked.result
 		data["screen"] = main.menu.screen
 		data["notice"] = main.ranked.notice
 		data["played"] = _rm_count
+		data["report"] = main.ranked.report_state
+		data["replay"] = _replay_info
+		data["team"] = {"match": main.ranked.team_match, "ok": _team_ok, "ally": main.ranked.allies.size(), "enemies": main.ranked.enemies.size()}
+		data["draft"] = {"match": main.ranked.draft_match, "stage": str(main.menu.draft.get("stage", "")),
+			"bans": main.menu.draft.get("bans", []), "picks": main.menu.draft.get("picks", [])}
 	print("MENU_NET_FINAL ", JSON.stringify(data))
 	get_tree().create_timer(0.5, true, false, true).timeout.connect(func(): get_tree().quit())
