@@ -175,6 +175,8 @@ func _ready() -> void:
 			_replay_file_test()
 		"team_rules":
 			_team_rules_test()
+		"bounds":
+			_bounds_test()
 		"music":
 			# The tracks the game finds (in the exported build, inside its package).
 			await get_tree().process_frame
@@ -1832,7 +1834,7 @@ func _lockon_test() -> void:
 	if is_instance_valid(decoy):
 		decoy.undo()
 	await _wait(0.2)
-	_ok("When the doll goes, the lock goes", not a.locked, "locked %s" % a.locked)
+	_ok("When the doll goes, the lock goes back to the real rival", a.locked and a.aim_target() == b, "locked %s" % a.locked)
 	# Free aim: looking 90 degrees off the rival, the shot leaves where the camera looks.
 	ab = await _setup("pikachu", "snorlax", Vector3(-5, 0, 0), Vector3(3, 0, 0))
 	a = ab[0]
@@ -2013,6 +2015,51 @@ func _replay_file_test() -> void:
 
 ## A 2 vs 2 (four Pokémon, teams 0 1 0 1): the rival is the nearest enemy standing, shots go through the
 ## ally, and a team loses only when both of its Pokémon are out.
+## Nobody may leave the arena: on the night stadium and the League's the Pokémon walk (and dash) toward every edge
+## for a while, and none of them gets past the limits.
+func _bounds_test() -> void:
+	await get_tree().physics_frame
+	var worst := {}
+	for stage in ["night", "league"]:
+		var picks: Array = []
+		for sp in ["pikachu", "snorlax", "charizard", "garchomp"]:
+			picks.append({"species": sp, "loadout": Loadout.default_for(sp)})
+		main.start_server_battle(picks, stage)
+		await get_tree().physics_frame
+		var f: Array = main.fighters
+		for k in f.size():
+			f[k].immortal = true
+			f[k].locked = false
+		var far := 0.0
+		var dirs := [Vector2(1, 0), Vector2(0, 1), Vector2(-1, 0), Vector2(0, -1)]
+		var seconds := 36.0
+		var t_end := t + seconds
+		var next_dash := t
+		while t < t_end:
+			var phase := int((seconds - (t_end - t)) / (seconds / 4.0)) % 4
+			for k in f.size():
+				f[k].ctrl.move_input = dirs[(phase + k) % 4]
+				f[k].ctrl.yaw = 0.0
+				if t >= next_dash:
+					f[k].ctrl.press("dodge")
+					f[k].ctrl.press("jump")
+			if t >= next_dash:
+				next_dash = t + 1.2
+			for o in f:
+				far = maxf(far, Vector2(o.global_position.x, o.global_position.z).length())
+			await get_tree().physics_frame
+		var reach := Vector2.ZERO
+		for o in f:
+			reach.x = maxf(reach.x, absf(o.global_position.x))
+			reach.y = maxf(reach.y, absf(o.global_position.z))
+		worst[stage] = [snappedf(reach.x, 0.1), snappedf(reach.y, 0.1), snappedf(far, 0.1)]
+		print("BOUNDS ", stage, " farthest |x| |z| radius: ", worst[stage])
+	# The night stadium's limit is the neon line (half the field plus 1.5 m); the League's is its ring (the first one is 30 m
+	# wide: nobody is held in, but the ring pushes).
+	_ok("Night stadium: nobody gets past the neon line", worst.night[0] <= NightStadium.LENGTH * 0.5 + NightStadium.LIMIT + 1.0 and worst.night[1] <= NightStadium.WIDTH * 0.5 + NightStadium.LIMIT + 1.0, str(worst.night))
+	_ok("League: nobody gets beyond the stadium wall", worst.league[2] <= 40.0, str(worst.league))
+
+
 func _team_rules_test() -> void:
 	await get_tree().physics_frame
 	var picks: Array = []

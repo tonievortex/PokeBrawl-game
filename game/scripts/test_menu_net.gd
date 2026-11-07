@@ -58,6 +58,8 @@ var _ping_sum := 0
 var _ping_n := 0
 var _last_path := ""          # "direct" or "relay": how the packets travelled in the last battle
 var _team_ok := false         # a 2 vs 2: the four fighters were built as they should
+var _lobby_searched := false
+var _slot_seen := -1
 
 
 func _ready() -> void:
@@ -104,9 +106,34 @@ func _capture(n: String) -> void:
 	img.save_png(ProjectSettings.globalize_path("res://").path_join("../captures/net_%s_%s.png" % [role, n]))
 
 
+## --scenario=serverdown: the test kills the ranking server in the middle of the battle and starts it again later.
+## What this copy must show: it is taken out of the match with the server error on the Ranked screen (nothing
+## online works there), and when the server is back the lobby works again by itself.
+var _sd_seen := false
+var _sd_kicked := false
+
+
+func _sd_check() -> bool:
+	var r: Ranked = main.ranked
+	if r.server_down:
+		_sd_seen = true
+		if not _sd_kicked and main.net == null and main.menu.is_open and main.menu.screen == "ranked":
+			_sd_kicked = true
+			_step("server error: out of the match, on the Ranked screen (can_search %s)" % r.can_search())
+			_capture("server_error")
+		return true
+	if _sd_seen and not r.loading and r.notice == "" and not r.me.is_empty() and main.menu.is_open and main.menu.screen == "ranked":
+		_step("the server is back: the lobby works again (can_search %s)" % r.can_search())
+		_finish("" if _sd_kicked and r.can_search() else "after the server error: kicked %s, can search %s" % [_sd_kicked, r.can_search()])
+		return true
+	return _sd_seen
+
+
 func _physics_process(delta: float) -> void:
 	_t += delta
-	if _t > (260.0 if _ranked else 150.0):
+	if _scenario == "serverdown" and _sd_check():
+		return
+	if _t > (260.0 if _ranked else 150.0) and not _sd_seen:
 		_finish("timed out at: " + str(_steps.back() if not _steps.is_empty() else "start"))
 		return
 	if _ranked_done:
@@ -151,7 +178,7 @@ func _menu(m: Menu) -> void:
 				if _room_mode == "create":
 					_room_started = true
 					m.room_open()
-					m._room_create()
+					m._room_create()          # (a lobby with a friend: a party)
 					return
 				if FileAccess.file_exists(_room_file):
 					var code := FileAccess.get_file_as_string(_room_file).strip_edges()
@@ -162,12 +189,18 @@ func _menu(m: Menu) -> void:
 						_step("joining room %s" % code)
 						m._room_join()
 						return
-			if _room_mode == "create" and not _room_written and rk.room_code != "":
+			var lobby_code := str(rk.party.get("code", ""))
+			if _room_mode == "create" and not _room_written and lobby_code != "":
 				_room_written = true
 				var f := FileAccess.open(_room_file, FileAccess.WRITE)
-				f.store_string(rk.room_code)
+				f.store_string(lobby_code)
 				f.close()
-				_step("room %s open" % rk.room_code)
+				_step("lobby %s open" % lobby_code)
+			# The leader looks for a match once the friend is in.
+			if _room_mode == "create" and _room_written and not _lobby_searched and rk.state == "idle" and rk.party.get("members", []).size() == 2:
+				_lobby_searched = true
+				_step("the lobby has two players: the leader looks for a 2 vs 2")
+				rk.search()
 			if rk.state == "searching":
 				_capture("ranked_search")
 		"selection":
@@ -309,6 +342,18 @@ func _combat(delta: float) -> void:
 func _ranked_after() -> void:
 	var r: Ranked = main.ranked
 	var m: Menu = main.menu
+	# --scenario=rematch (arena): both press A on the result screen at the same moment: nobody accepts, the
+	# server starts the new match (a draft again) for both.
+	if _scenario == "rematch":
+		if r._live and r._last_id > 0 and int(r._match.get("match_id", 0)) != r._last_id:
+			_step("rematch started: match %d (after %d)" % [int(r._match.match_id), r._last_id])
+			_finish("")
+			return
+		if main.net is ArenaClient and not r.result.is_empty() and not _rm_sent and r.can_ask_rematch():
+			_rm_sent = true
+			_step("both ask for the rematch at once")
+			_press("jump")
+		return
 	# Out of the room already (the other one declined or left): the Ranked screen.
 	if main.net == null:
 		if m.is_open and m.screen == "replays":
@@ -436,10 +481,11 @@ func _ranked_after() -> void:
 func _team_check(net: Net) -> void:
 	var c: ArenaClient = net
 	var f: Array = main.fighters
-	var ok := f.size() == 4 and f[0].team == 0 and f[2].team == 0 and f[1].team == 1 and f[3].team == 1
+	var ok: bool = f.size() == 4 and f[0].team == 0 and f[2].team == 0 and f[1].team == 1 and f[3].team == 1
 	ok = ok and c.slot_fighters.size() == 4 and c.slot_fighters[c.slot] == f[0] and c.slot_fighters[c.ally_slot()] == f[2]
 	ok = ok and main.hud._portraits.size() == 4 and main.trainers.size() == 4
 	_team_ok = ok
+	_slot_seen = c.slot
 	_step("2 vs 2 on screen: %s (slot %d, ally slot %d)" % ["ok" if ok else "WRONG", c.slot, c.ally_slot()])
 
 
@@ -466,6 +512,9 @@ func _finish(error: String) -> void:
 		data["played"] = _rm_count
 		data["report"] = main.ranked.report_state
 		data["replay"] = _replay_info
+		data["slot"] = _slot_seen
+		data["server"] = {"seen": _sd_seen, "kicked": _sd_kicked}
+		data["rematch"] = {"old": main.ranked._last_id, "new": int(main.ranked._match.get("match_id", 0)), "draft": main.ranked.draft_match}
 		data["team"] = {"match": main.ranked.team_match, "ok": _team_ok, "ally": main.ranked.allies.size(), "enemies": main.ranked.enemies.size()}
 		data["draft"] = {"match": main.ranked.draft_match, "stage": str(main.menu.draft.get("stage", "")),
 			"bans": main.menu.draft.get("bans", []), "picks": main.menu.draft.get("picks", [])}

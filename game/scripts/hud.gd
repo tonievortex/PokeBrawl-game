@@ -252,12 +252,13 @@ func _draw_ui() -> void:
 		_opening_cards()
 		return
 	_floating()
-	_frame_box(main.fighters[0], 0, Vector2(12, 10), false)
-	_frame_box(main.fighters[1], 1, Vector2(gw - 12 - 140, 10), true)
+	# The frames start a little lower: the ping sits above the player's one, in the top left corner.
+	_frame_box(main.fighters[0], 0, Vector2(12, 19), false)
+	_frame_box(main.fighters[1], 1, Vector2(gw - 12 - 140, 19), true)
 	if main.fighters.size() == 4:
 		# A 2 vs 2: the team-mate under me, the second rival under the first.
-		_frame_box(main.fighters[2], 2, Vector2(12, 54), false)
-		_frame_box(main.fighters[3], 3, Vector2(gw - 12 - 140, 54), true)
+		_frame_box(main.fighters[2], 2, Vector2(12, 63), false)
+		_frame_box(main.fighters[3], 3, Vector2(gw - 12 - 140, 63), true)
 	var j: Fighter = main.player
 	if j:
 		_moves(j, Vector2(20, gh - 62))
@@ -274,7 +275,7 @@ func _draw_ui() -> void:
 	if main.net and main.net.in_battle:
 		var ms: int = main.net.ping_ms()
 		var col := Color("7fd65b") if ms < 70 else (Color("ffc94a") if ms < 140 else Color("ff8a6a"))
-		_text(Vector2(gw * 0.5, 8) * _s, main.net.ping_label(), _p_log(), col, 0)
+		_text(Vector2(14, 4) * _s, main.net.ping_label(), _p_log(), col)
 	if main.start_t >= 0.0 and main.start_t < 1.0:
 		_start_banner(main.start_t)
 	if main.mode == "training" and main.net == null:
@@ -772,7 +773,8 @@ func _menu() -> void:
 ## Debug view (F3 / Select): hit volumes, bodies and AI state.
 func _debug() -> void:
 	_dbg_im.clear_surfaces()
-	if not debug:
+	# The hitboxes are for training and tests: online they would show where the rival's attacks reach.
+	if not debug or (main.net != null and not main._args.has("test")):
 		return
 	_dbg_im.surface_begin(Mesh.PRIMITIVE_LINES)
 	for l in main.combat.targets:

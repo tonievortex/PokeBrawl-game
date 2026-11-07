@@ -15,7 +15,8 @@ three in each packet) and reads the server's snapshots and events. Checks, per s
   team     a 2 vs 2 (four players: slots 0 and 2 against 1 and 3): four Pokémon in every snapshot,
            a team wins when both of the other team's Pokémon are out
   team_leave  in a 2 vs 2 one player leaves: only their Pokémon is out, the others fight on
-  draft_timeout  nobody does anything in the draft: random bans and picks fill in, the match starts
+  team_draft  a 2 vs 2 with a draft: four bans (hidden), the picks in the order team A, B, B, A, then the match
+draft_timeout  nobody does anything in the draft: random bans and picks fill in, the match starts
 
 Godot: the GODOT environment variable or "godot" on PATH.
 """
@@ -216,7 +217,7 @@ def team_main(scenario):
             check(left_sent and result is None, "one player left: the match goes on with the other three (no result yet)")
             fighters = c[0].fighters
             check(len(fighters) == 4 and fighters[3]["hp"] <= 0, "only the Pokémon of the one who left is out (hp %s)" % (fighters[3]["hp"] if len(fighters) == 4 else None))
-            check(all(fighters[i]["hp"] > 0 for i in range(3)) or result is not None, "the others are still standing")
+            check(sum(1 for i in range(3) if fighters[i]["hp"] > 0) >= 2 or result is not None, "the others are still standing (at least two of the three: the bots also fight each other)")
     finally:
         proc.kill()
         subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Process | Where-Object { $_.Name -like 'Godot*' } | Stop-Process -Force"], capture_output=True)
@@ -328,8 +329,88 @@ def draft_main(scenario):
     sys.exit(0 if ok else 1)
 
 
+def team_draft_main():
+    godot = os.environ.get("GODOT", "godot")
+    tmp = tempfile.mkdtemp()
+    log = open(os.path.join(tmp, "server.log"), "w", encoding="utf-8")
+    proc = subprocess.Popen([godot, "--headless", "--path", GAME, "--", "--server", "--port=%d" % PORT, "--match=d4", "--players=4",
+                             "--draft=1", "--draft_time=8", "--match_max=20"], stdout=log, stderr=subprocess.STDOUT)
+    ok = True
+
+    def check(cond, what):
+        nonlocal ok
+        print(("ok   " if cond else "FAIL ") + what)
+        ok = ok and cond
+
+    def last(c):
+        e = c.events_of("draft")
+        return e[-1] if e else {}
+
+    def spin(clients, seconds, cond=None):
+        end = time.time() + seconds
+        while time.time() < end:
+            for cl in clients:
+                cl.poll()
+                cl.input()
+            if cond and cond():
+                return True
+            time.sleep(1 / 60)
+        return bool(cond and cond())
+
+    try:
+        t0 = time.time()
+        while time.time() - t0 < 90:
+            log.flush()
+            if "MATCH_SERVER ready" in open(os.path.join(tmp, "server.log"), encoding="utf-8", errors="replace").read():
+                break
+            time.sleep(0.5)
+        c = [Client(i) for i in range(4)]
+        spin(c, 3.0, lambda: last(c[0]).get("stage") == "ban")
+        st = last(c[0])
+        check(st.get("stage") == "ban" and st.get("bans") == [None] * 4 and st.get("ban_done") == [False] * 4, "the draft opens with the ban stage for four, bans hidden: %s" % st.get("ban_done"))
+        for i, sp in enumerate(["pikachu", "snorlax", "gengar", "garchomp"]):
+            c[i].msg({"t": "ban", "species": sp})
+            spin(c, 0.4)
+            if i < 3:
+                check(last(c[0]).get("stage") == "ban" and last(c[0]).get("bans") == [None] * 4, "ban %d in: the bans are still hidden" % (i + 1))
+        spin(c, 3.0, lambda: last(c[0]).get("stage") == "pick")
+        st = last(c[0])
+        check(st.get("stage") == "pick" and st.get("bans") == ["pikachu", "snorlax", "gengar", "garchomp"], "all four banned: the bans are shown and the picks begin: %s" % st.get("bans"))
+        free = [sp for sp in ("charizard", "lucario", "blastoise", "venusaur", "greninja", "scizor")]
+        turns = []
+        for n in range(4):
+            st = last(c[0])
+            turn = st.get("turn")
+            turns.append(turn)
+            wrong = (turn + 1) % 4
+            c[wrong].msg({"t": "pick", "species": free[n]})
+            spin(c, 0.3)
+            check(last(c[0]).get("picks")[wrong] is None, "pick %d: out of turn is ignored" % (n + 1)) if n == 0 else None
+            c[turn].msg({"t": "pick", "species": free[n]})
+            spin(c, 0.6)
+        first = turns[0] % 2
+        check(turns == [first, 1 - first, 1 - first + 2, first + 2], "the picks go team A, team B, team B, team A: %s" % turns)
+        spin(c, 3.0, lambda: last(c[0]).get("stage") == "done")
+        st = last(c[0])
+        check(st.get("stage") == "done" and all(st.get("picks")) and len(set(st["picks"])) == 4, "four different picks, the draft is done: %s" % st.get("picks"))
+        for i, cl in enumerate(c):
+            cl.msg({"t": "choice", "species": st["picks"][i], "ready": True})
+        spin(c, 5.0, lambda: any(e.get("t") == "start" for e in c[0].events))
+        start = [e for e in c[0].events if e.get("t") == "start"]
+        check(bool(start) and [x["species"] for x in start[0]["slots"]] == st["picks"], "with the picked ones the match starts")
+    finally:
+        proc.kill()
+        subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Process | Where-Object { $_.Name -like 'Godot*' } | Stop-Process -Force"], capture_output=True)
+    print("\n%s" % ("ALL OK" if ok else "FAILED"))
+    if not ok:
+        print(open(os.path.join(tmp, "server.log"), encoding="utf-8", errors="replace").read()[-2000:])
+    sys.exit(0 if ok else 1)
+
+
 def main():
     scenario = sys.argv[1] if len(sys.argv) > 1 else "fight"
+    if scenario == "team_draft":
+        return team_draft_main()
     if scenario in ("draft", "draft_timeout"):
         return draft_main(scenario)
     if scenario in ("team", "team_leave"):

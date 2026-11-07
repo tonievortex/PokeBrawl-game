@@ -275,6 +275,7 @@ func start_battle(p1: String, p2: String, diff: String, rival_loadout := {}, riv
 		if mode == "training":
 			a.immortal = true            # nobody faints in training (see Fighter.immortal)
 			b.immortal = true
+			ai.mode = "still"              # the training rival stands still until T (or the tutorial) frees it
 			_setup_tutorial()
 	combat.targets = fighters.duplicate()
 	camera.target = a
@@ -1043,6 +1044,22 @@ func _to_selection(warn: bool) -> void:
 	menu.open_menu("selection")
 
 
+## The ranking server stopped answering (see Ranked._heartbeat): whoever is online (a match, a replay, a lobby)
+## is taken out with the error; a match that was being played counts as a draw (the server settles it so when
+## it is back). Nothing is told to the old server: it may still be there, and leaving would cost a loss.
+func server_error_kick(was_match: bool) -> void:
+	var reason := tr("Server error: the connection to the PokeBrawl server was lost.")
+	if was_match:
+		reason += " " + tr("The match counts as a draw.")
+	if net != null:
+		if net is ArenaClient:
+			net._left = true
+		ranked._return_screen = true
+		_disconnection(reason)
+	elif menu.is_open and menu.screen in ["room", "replays", "account"] and menu.screen != "account":
+		menu._go("ranked")
+
+
 func _disconnection(reason: String) -> void:
 	session.event("disconnected", {"reason": reason})
 	# Before leaving the battle (back_to_menu would count it as mine): in a ranked match
@@ -1154,7 +1171,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 			return
 	if ev is InputEventKey and ev.pressed and not ev.echo and ev.physical_keycode == KEY_F9:
 		session.open_folder()
-	if ev.is_action_pressed("debug"):
+	if ev.is_action_pressed("debug") and (net == null or _args.has("test")):
 		hud.debug = not hud.debug
 	if fighters.size() < 2:
 		return

@@ -113,6 +113,15 @@ func _run() -> void:
 		"season": {"name": "2026-11", "seconds_left": 5 * 3600}}, true)
 	await _wait(0.4)
 	await _capture("ranked_calibrating")
+	# The lobby of a 2 vs 2 with a friend (a made-up party: no server needed).
+	r.team_pref = true
+	r.party = {"status": "party", "code": "K7PQ2", "leader": true, "queue": "idle", "members": [
+		{"name": NAME, "leader": true, "avatar": "gengar", "rating": 1040}, {"name": "Misty", "leader": false, "avatar": "lucario", "rating": 1100}]}
+	r._party_t = 1000.0
+	await _wait(0.5)
+	await _capture("lobby_2v2")
+	r.party = {}
+	r.team_pref = false
 	m.room_open()
 	m.room_input = "K7P"
 	m.room_focus = 1

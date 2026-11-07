@@ -24,7 +24,7 @@ const S_PONG := 0x84
 const PHASES := ["lobby", "countdown", "fight", "over"]
 const HELLO_FIRST := 0.4          # a hello until the gateway answers: this often
 const HELLO_KEEP := 1.0           # ...and afterwards, to keep the door open
-const SILENCE := 6.0              # nothing from the server for this long: the connection is lost
+const SILENCE := 12.0             # nothing from the server for this long: the connection is lost (a lag spike is not a loss)
 const INPUTS_PER_PACKET := 4      # the newest inputs: a lost packet costs nothing
 const PING_EVERY := 0.25
 
@@ -45,6 +45,7 @@ var _intent := Intent.new()
 var _event_ack := 0
 var _last_choice := {}
 var _choice_t := 0.0
+var _ack_t := 0.0
 var _seen: Array = [{}, {}, {}, {}]  # per slot: press counters last seen in snapshots
 var _last_rx := 0.0
 var _rtts: Array = []
@@ -193,8 +194,23 @@ func _physics_process(delta: float) -> void:
 				# Until there is a pick to repeat, a plain "hi": the server learns this player's address from
 				# any packet (a draft starts when it knows both) and it keeps the connection alive.
 				_message(_last_choice if not _last_choice.is_empty() else {"t": "hi"})
+			# The events seen so far are acknowledged here too: otherwise the server keeps sending every old one
+			# first and, with four players' draft states, the newest no longer fit in a packet.
+			_ack_t -= delta
+			if _ack_t <= 0.0:
+				_ack_t = 0.2
+				_send_ack()
 		"countdown", "fight":
 			_send_input()
+
+
+## An input packet with no inputs: only "I have seen the events up to this one".
+func _send_ack() -> void:
+	var b := StreamPeerBuffer.new()
+	b.put_u8(C_INPUT)
+	b.put_u16(_event_ack & 0xFFFF)
+	b.put_u8(0)
+	_send_packet(b.data_array)
 
 
 ## One datagram for the server (the gateway wants 0x02 first).

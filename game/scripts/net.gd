@@ -171,10 +171,7 @@ func path() -> String:
 
 ## "Ping 35 ms", with how the packets travel when there is a proxy ("direct" or "relay").
 func ping_label() -> String:
-	var text := "Ping %d ms" % ping_ms()
-	if proxy != null:
-		text += "  (%s)" % path()
-	return text
+	return "Ping %d ms" % ping_ms()
 
 
 func close() -> void:

@@ -23,6 +23,9 @@ const JOIN_TRY := 12.0        # one connection attempt
 const JOIN_TOTAL := 45.0
 const REPORT_EVERY := 3.0     # asking again until the other side's report is in
 const REPORT_TRIES := 45
+const HEARTBEAT := 2.0         # asking the server whether it is there: this often
+const HEARTBEAT_FAILS := 3     # ...it is "down" after this many answers missing in a row (one late answer is only lag)
+const HEARTBEAT_TIMEOUT := 4.0
 const REMATCH_WAIT := 25.0    # a rematch request is dropped (declined) after this long
 
 var main: Node
@@ -42,9 +45,16 @@ const REPORT_REASONS := ["cheating", "abuse", "leaving", "other"]
 var report_state := ""        # "", "choose", "target" (2 vs 2: which player), "sending", "sent" or "error"
 var report_msg := ""
 var _reported_match := 0
-var draft_pref := false       # look for a draft match (ban and pick) instead of a normal one (F8)
+var draft_pref := true        # (every ranked match is a draft now: ban and pick first)
 var draft_match := false      # the match in progress is a draft
-var team_pref := false        # look for a 2 vs 2 (four players, two teams) instead of a 1 vs 1 (F10)
+var team_pref := false        # the lobby's mode: a ranked 2 vs 2 (four players, two teams) instead of a ranked 1 vs 1
+var server_down := false      # the ranking server does not answer: nothing online works until it does
+var _hb_t := 1.0
+var _hb_fails := 0
+var _hb_busy := false
+var party := {}               # a 2 vs 2 lobby with a friend: {code, leader (am I), members: [{name, avatar, leader...}]}
+var _party_t := 0.0
+var _party_busy := false
 var team_match := false       # the match in progress (or just played) is a 2 vs 2
 var room_players := 0         # a room waiting for its players: how many are in...
 var room_size := 2            # ...of how many (2, or 4 for a 2 vs 2)
@@ -82,13 +92,13 @@ const ARENA_CONNECT := 25.0   # the game server must answer within this long
 ## "asked" (my rival asked me), "starting" (accepted, the server is making the new match).
 var rematch := ""
 var _rm_t := 0.0
+var _rm_poll := 0.0
+var _rm_busy := false
 var _last_id := 0             # the match that just ended (a rematch follows it)
 var _last_won := false
 
 
 func _ready() -> void:
-	if main and main._args.has("draft"):
-		draft_pref = true
 	if main and main._args.has("team"):
 		team_pref = true
 	if main and main._args.has("ranked_server"):
@@ -234,7 +244,7 @@ func calibrating() -> bool:
 
 
 func can_search() -> bool:
-	return state == "idle" and not loading and token != "" and not me.is_empty()
+	return state == "idle" and not loading and token != "" and not me.is_empty() and not server_down
 
 
 func is_active() -> bool:
@@ -378,6 +388,7 @@ func _account_error(code: int, d: Dictionary) -> String:
 func logout() -> void:
 	if state == "searching":
 		cancel()
+	party_leave()
 	if token != "":
 		_call(HTTPClient.METHOD_POST, "/logout", {}, func(_c: int, _d: Dictionary): pass)
 	token = ""
@@ -391,7 +402,7 @@ func logout() -> void:
 # ---------------------------------------------------------------- queue
 
 func search() -> void:
-	if not can_search():
+	if not can_search() or in_party_as_member():
 		return
 	state = "searching"
 	_room = false
@@ -463,7 +474,7 @@ func dict_with(a: Dictionary, b: Dictionary) -> Dictionary:
 ## What the backend is told when joining the queue: the game version (only the same one
 ## meets) and this computer's home-network addresses (for two players on one router).
 func _join_body() -> Dictionary:
-	return {"version": Menu.version(), "local": Net.local_ips(), "arena": true, "draft": draft_pref and not team_pref, "team": team_pref}
+	return {"version": Menu.version(), "local": Net.local_ips(), "arena": true, "draft": true, "team": team_pref}
 
 
 ## Who hosts and, for the guest, where it joins (for the screen).
@@ -473,6 +484,87 @@ func match_role() -> String:
 
 func match_host_ip() -> String:
 	return str(_match.get("host_ip", ""))
+
+
+# ---------------------------------------------------------------- the lobby with a friend (2 vs 2)
+
+## The lobby's own random Pokémon, as the friend sees it.
+func _avatar() -> String:
+	return main.menu.lobby_avatar if main and main.menu else ""
+
+
+## Whether I am in somebody else's lobby (the leader is the one who looks for the match).
+func in_party_as_member() -> bool:
+	return not party.is_empty() and not bool(party.get("leader", true))
+
+
+## Opens a lobby: a code to give to a friend. Only a 2 vs 2 has one.
+func party_create() -> void:
+	if not can_search():
+		return
+	team_pref = true
+	_call(HTTPClient.METHOD_POST, "/party/create", {"avatar": _avatar()}, func(code: int, d: Dictionary):
+		if code == 200 and d.get("status", "") == "party":
+			party = d
+			_party_t = 1.0
+		else:
+			notice = "!" + str(d.get("error", tr("Could not reach the ranking server."))))
+
+
+## Joins a friend's lobby by its code. done(ok: bool, error: String).
+func party_join(code_text: String, done: Callable) -> void:
+	if not can_search():
+		done.call(false, tr("Not ready yet: wait a moment."))
+		return
+	_call(HTTPClient.METHOD_POST, "/party/join", {"code": code_text, "avatar": _avatar()}, func(code: int, d: Dictionary):
+		if code == 200 and d.get("status", "") == "party":
+			party = d
+			team_pref = true
+			_party_t = 1.0
+			done.call(true, "")
+		elif code == 0:
+			done.call(false, tr("Could not reach the ranking server."))
+		else:
+			done.call(false, str(d.get("error", tr("Something went wrong (%d).") % code))))
+
+
+func party_leave() -> void:
+	if party.is_empty():
+		return
+	party = {}
+	if token != "":
+		_call(HTTPClient.METHOD_POST, "/party/leave", {}, func(_c: int, _d: Dictionary): pass)
+
+
+## The lobby as the server says it is (polled while there is one): who is in it, whether the leader is searching.
+func _on_party(code: int, d: Dictionary) -> void:
+	if code != 200 or party.is_empty():
+		return
+	if d.get("status", "") != "party":
+		party = {}
+		notice = "!" + tr("The lobby was closed.")
+		if state == "searching":
+			state = "idle"
+		return
+	party = d
+	team_pref = true
+	if bool(d.get("leader", true)):
+		return
+	# A friend's lobby: the search the leader starts is mine too (the match arrives through the queue).
+	if str(d.get("queue", "")) in ["waiting", "matched"] and state == "idle":
+		state = "searching"
+		_room = false
+		rematch = ""
+		waited = float(d.get("waited", 0.0))
+		in_queue = 0
+		notice = ""
+		result = {}
+		_fails = 0
+		_poll_t = 0.2
+		friendly = false
+	elif str(d.get("queue", "")) == "idle" and state == "searching":
+		state = "idle"
+		notice = "!" + tr("The leader stopped searching.")
 
 
 ## Leaves the queue, or cancels the match being set up.
@@ -499,6 +591,10 @@ func _on_ticket(code: int, d: Dictionary) -> void:
 			notice = "!" + tr("Could not reach the ranking server.")
 		return
 	_fails = 0
+	if d.get("status", "") == "idle" and in_party_as_member():
+		state = "idle"          # the leader stopped searching
+		notice = "!" + tr("The leader stopped searching.")
+		return
 	match d.get("status", ""):
 		"matched":
 			_begin_match(d)
@@ -598,9 +694,75 @@ func connecting_for() -> float:
 	return _t
 
 
+# ---------------------------------------------------------------- is the server there?
+
+## Every few seconds the server is asked if it is there. A few answers missing in a row (not one late one: a
+## laggy line is not a dead server) and the game says "server error": whoever is online is taken out, online
+## play is off, the bot still works. When the server answers again everything comes back by itself.
+func _heartbeat(delta: float) -> void:
+	if main == null or (main._args.has("test") and not main._args.has("ranked_server")) or _hb_busy:
+		return
+	_hb_t -= delta
+	if _hb_t > 0.0:
+		return
+	_hb_t = HEARTBEAT
+	_hb_busy = true
+	var req := HTTPRequest.new()
+	req.timeout = HEARTBEAT_TIMEOUT
+	add_child(req)
+	if req.request(server + "/health") != OK:
+		req.queue_free()
+		_hb_busy = false
+		_hb_result(false)
+		return
+	req.request_completed.connect(func(res: int, code: int, _h: PackedStringArray, _b: PackedByteArray):
+		req.queue_free()
+		_hb_busy = false
+		_hb_result(res == HTTPRequest.RESULT_SUCCESS and code == 200))
+
+
+func _hb_result(ok: bool) -> void:
+	if ok:
+		_hb_fails = 0
+		if server_down:
+			_on_server_up()
+		return
+	_hb_fails += 1
+	if _hb_fails >= HEARTBEAT_FAILS and not server_down:
+		_on_server_down()
+
+
+func _on_server_down() -> void:
+	server_down = true
+	var was_match: bool = _live or (main.net != null and in_ranked_room())
+	state = "idle"
+	_live = false
+	_match = {}
+	rematch = ""
+	_arena_wait = {}
+	_pending = {}
+	party = {}
+	busy = false
+	room_code = ""
+	skip_auto = true
+	notice = ""
+	main.server_error_kick(was_match)
+
+
+func _on_server_up() -> void:
+	server_down = false
+	_hb_fails = 0
+	notice = ""
+	if token != "":
+		loading = true
+		_refresh_me()
+		_refresh_board()
+
+
 # ---------------------------------------------------------------- the match
 
 func _process(delta: float) -> void:
+	_heartbeat(delta)
 	match state:
 		"searching":
 			waited += delta
@@ -631,6 +793,24 @@ func _process(delta: float) -> void:
 				else:
 					_join_at = _t
 					_open_room(false, str(_match.host_ip))
+	if token != "" and not party.is_empty() and not _party_busy:
+		_party_t -= delta
+		if _party_t <= 0.0:
+			_party_t = 1.0
+			_party_busy = true
+			_call(HTTPClient.METHOD_GET, "/party", {}, func(code: int, d: Dictionary):
+				_party_busy = false
+				_on_party(code, d))
+	if _arena and token != "" and _last_id > 0 and not team_match and main.net != null and main._end_t > main.CHOICES_AT and not _rm_busy:
+		_rm_poll -= delta
+		if _rm_poll <= 0.0:
+			_rm_poll = 1.0
+			_rm_busy = true
+			var mid_now := _last_id
+			_call(HTTPClient.METHOD_GET, "/rematch?match_id=%d" % mid_now, {}, func(code: int, d: Dictionary):
+				_rm_busy = false
+				if code == 200:
+					_on_rematch_state(mid_now, d))
 	if rematch in ["asking", "asked"]:
 		_rm_t += delta
 		if _rm_t > REMATCH_WAIT:
@@ -778,6 +958,9 @@ func on_disconnect(_reason: String) -> void:
 
 ## From Main: I leave the battle (or the room) on my own.
 func on_leave(battle_over: bool) -> void:
+	if _arena and rematch in ["asking", "asked"]:
+		_rematch_vote(false)          # leaving while a rematch is open: the rival is told it is a no
+		rematch = ""
 	if not _live:
 		return
 	if _arena:
@@ -853,9 +1036,15 @@ func _on_report(code: int, d: Dictionary) -> void:
 
 # ---------------------------------------------------------------- rematch
 
-## Only the one who lost can ask: A on the result screen.
+## A on the result screen. In a match run by the server (1 vs 1) either player can ask, and nobody has to
+## accept: the server starts the new match as soon as both have said yes (also at the very same moment).
+## A peer-to-peer match (an old game) keeps its old rule: the loser asks, the winner accepts.
 func can_ask_rematch() -> bool:
-	return in_ranked_room() and not _arena and not friendly and rematch == "" and _last_id > 0 and not _last_won and main._end_t > main.CHOICES_AT
+	if not in_ranked_room() or rematch != "" or _last_id <= 0 or main._end_t <= main.CHOICES_AT:
+		return false
+	if _arena:
+		return not team_match
+	return not friendly and not _last_won
 
 
 func ask_rematch() -> void:
@@ -863,7 +1052,50 @@ func ask_rematch() -> void:
 		return
 	rematch = "asking"
 	_rm_t = 0.0
+	if _arena:
+		_rematch_vote(true)
+		return
 	main.net.send_event({"t": "rm_ask"})
+
+
+## Arena match: my yes or no to the server (the new match comes back with the answer, or on a later poll).
+func _rematch_vote(yes: bool) -> void:
+	var mid := _last_id
+	_call(HTTPClient.METHOD_POST, "/match/rematch_vote", {"match_id": mid, "vote": yes}, func(code: int, d: Dictionary):
+		if code == 200 and yes:
+			_on_rematch_state(mid, d))
+
+
+## What the server says about a rematch of match `mid` (a vote's answer or a poll).
+func _on_rematch_state(mid: int, d: Dictionary) -> void:
+	if mid != _last_id or not _arena:
+		return
+	match str(d.get("status", "")):
+		"matched":
+			if rematch in ["asking", "asked"]:
+				_arena_rematch_begin(d)
+		"waiting":
+			# The rival asked first: the screen offers to accept (A), or to decline (B).
+			if rematch == "" and bool(d.get("other", false)) and not bool(d.get("me", false)) and in_ranked_room() and main._end_t >= 0.0:
+				rematch = "asked"
+				_rm_t = 0.0
+		"declined", "expired":
+			if rematch in ["asking", "asked"]:
+				rematch = ""
+				skip_auto = true
+				notice = "!" + (tr("Rematch declined.") if str(d.status) == "declined" else tr("Your rival did not answer."))
+				main._leave_ranked()
+
+
+## Both said yes: back to the Ranked screen's state of "connecting", to the new match's server (draft first).
+func _arena_rematch_begin(d: Dictionary) -> void:
+	rematch = ""
+	_arena_wait = {}
+	result = {}
+	skip_auto = true
+	main.back_to_menu("ranked")
+	skip_auto = true
+	_begin_match(d)
 
 
 ## The rival asked me (a net event).
@@ -878,6 +1110,19 @@ func on_rematch_ask() -> void:
 ## to the menu (and I go too, a moment later so the answer arrives first).
 func answer_rematch(yes: bool) -> void:
 	if rematch != "asked":
+		return
+	if _arena:
+		if yes:
+			rematch = "asking"
+			_rm_t = 0.0
+			_rematch_vote(true)
+		else:
+			_rematch_vote(false)
+			rematch = ""
+			notice = ""
+			main.get_tree().create_timer(0.4).timeout.connect(func():
+				if in_ranked_room():
+					main._leave_ranked())
 		return
 	if yes:
 		main.net.send_event({"t": "rm_yes"})

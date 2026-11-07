@@ -36,7 +36,7 @@ const S_PONG := 0x84
 const PHASES := ["lobby", "countdown", "fight", "over"]
 const LOBBY_TIMEOUT := 90.0       # both choices must be in by then
 const COUNTDOWN := 5.0            # the clients' VS screen and trainers' opening take ~4.7 s
-const SILENCE_FORFEIT := 5.0      # in a fight, a player who sends nothing for this long forfeits
+const SILENCE_FORFEIT := 10.0     # in a fight, a player who sends nothing for this long forfeits (a lag spike is not a forfeit)
 const MATCH_MAX := 300.0          # then whoever has more HP left wins
 const END_GRACE := 4.0            # after the result the process stays a bit: everyone gets it
 const SNAPSHOT_EVERY := 2         # physics ticks (60 per second) between snapshots: 30 per second
@@ -54,9 +54,10 @@ var phase := "lobby"
 ## then frames: u32 length + [tick u32, phase u8, n u8, n x Net.RECORD_BYTES, events u8, each:
 ## id u16, length u16, JSON].
 var replay_path := ""
-## --draft=1: before the match each player bans one Pokémon (both at once, hidden until both are
-## in), then they pick one each, one after the other (a random player first): nothing banned or
-## already picked can be taken. Whoever is late gets a random ban or pick. Only then do the players
+## --draft=1: before the match each player bans one Pokémon (all at once, hidden until all are
+## in), then they pick one each, one after the other (a 1 vs 1: a random player first, then the
+## other; a 2 vs 2: a random team first, then the other team's two, then the first team's second
+## player): nothing banned or already picked can be taken. Whoever is late gets a random ban or pick. Only then do the players
 ## send their moves and "ready" (the species must be the one they picked). --draft_time=N shortens
 ## the waits (tests).
 var draft_on := false
@@ -85,7 +86,7 @@ var _fight_t := 0.0
 var _tick := 0
 var _stage := ""
 var _finished := false
-var _draft := {"stage": "wait", "bans": [null, null], "picks": [null, null], "turn": 0}
+var _draft := {"stage": "wait", "bans": [null, null], "picks": [null, null], "turn": 0, "idx": 0, "order": [0, 1]}
 var _draft_t := 0.0
 var _replay: FileAccess
 var _replay_event := 0              # the last event written to the replay
@@ -110,8 +111,11 @@ func _ready() -> void:
 		_applied.append(0)
 		_seen.append({})
 		_acked.append(0)
-	if players > 2:
-		draft_on = false          # (the draft is for a 1 vs 1)
+	_draft.bans = []
+	_draft.picks = []
+	for i in players:
+		_draft.bans.append(null)
+		_draft.picks.append(null)
 	if port <= 0 or _udp.bind(port, "127.0.0.1") != OK:
 		push_error("match server: cannot listen on port %d" % port)
 		get_tree().quit(2)
@@ -261,18 +265,21 @@ func _finish(reason: String, winner: int) -> void:
 func _draft_step(delta: float) -> void:
 	match str(_draft.stage):
 		"wait":
-			if _addr[0] != null and _addr[1] != null:
+			if not _addr.has(null):
 				_draft.stage = "ban"
 				_draft_t = ban_time
 				_draft_emit()
 		"ban":
 			_draft_t -= delta
-			if (_draft.bans[0] != null and _draft.bans[1] != null) or _draft_t <= 0.0:
-				for s in 2:
+			if not _draft.bans.has(null) or _draft_t <= 0.0:
+				for s in players:
 					if _draft.bans[s] == null:
 						_draft.bans[s] = _draft_random(false)
 				_draft.stage = "pick"
-				_draft.turn = randi() % 2
+				var first := randi() % 2          # the team that picks first
+				_draft.order = [first, 1 - first] if players == 2 else [first, 1 - first, 1 - first + 2, first + 2]
+				_draft.idx = 0
+				_draft.turn = _draft.order[0]
 				_draft_t = pick_time
 				_draft_emit()
 		"pick":
@@ -298,10 +305,11 @@ func _draft_random(for_pick: bool) -> String:
 
 func _draft_pick(s: int, sp: String) -> void:
 	_draft.picks[s] = sp
-	if _draft.picks[0] != null and _draft.picks[1] != null:
+	if not _draft.picks.has(null):
 		_draft.stage = "done"
 	else:
-		_draft.turn = 1 - s
+		_draft.idx = int(_draft.idx) + 1
+		_draft.turn = _draft.order[int(_draft.idx)]
 		_draft_t = pick_time
 	_draft_emit()
 
@@ -309,8 +317,13 @@ func _draft_pick(s: int, sp: String) -> void:
 ## Everyone is told the state of the draft. Bans stay hidden while the bans are being made.
 func _draft_emit() -> void:
 	var shown: bool = str(_draft.stage) != "ban" and str(_draft.stage) != "wait"
-	_emit(-1, {"t": "draft", "stage": _draft.stage, "bans": _draft.bans.duplicate() if shown else [null, null],
-		"ban_done": [_draft.bans[0] != null, _draft.bans[1] != null], "picks": _draft.picks.duplicate(),
+	var hidden: Array = []
+	var done: Array = []
+	for i in players:
+		hidden.append(null)
+		done.append(_draft.bans[i] != null)
+	_emit(-1, {"t": "draft", "stage": _draft.stage, "bans": _draft.bans.duplicate() if shown else hidden,
+		"ban_done": done, "picks": _draft.picks.duplicate(),
 		"turn": _draft.turn, "left": snappedf(maxf(_draft_t, 0.0), 0.1)})
 
 

@@ -24,8 +24,8 @@ const STAGE_TEXT := {"night": "A Galar stadium at night, packed and walled all r
 	"floating": "A platform over the void. Whoever is pushed off the edge is out.",
 	"league": "The League's coliseum. The field closes in bit by bit: outside it you lose HP."}
 const COLUMNS := 5
-const MAIN_MENU := [["combat", "Battle", "Against the AI. Pick your Pokémon, the rival and the difficulty."],
-	["ranked", "Ranked", "Rated 1 vs 1 against other players: it looks for a rival right away. The server keeps your rating and the ranking."],
+const MAIN_MENU := [["ranked", "Ranked", "Ranked 1 vs 1, or 2 vs 2 with a friend. Ban and pick before every match; the server keeps your rating and the ranking."],
+	["combat", "Battle", "Against the AI. Pick your Pokémon, the rival and the difficulty."],
 	["training", "Training", "Still or active rival, no rush. R resets, T stops or frees the rival."],
 	["moves", "Moves", "Pick each Pokémon's four moves and its ability, and see what each one does."],
 	["options", "Options", "Controls, sound, screen and language."],
@@ -80,8 +80,9 @@ var draft := {}
 var draft_cursor := 0
 var draft_my_ban := ""
 var draft_at := 0.0               # when the last state came (the countdown runs from then)
-var room_draft := false           # the room being made is a draft
-var room_team := false            # ...or a 2 vs 2 (four players)
+var acc_gate := false              # the account screen is the start of the game: it cannot be skipped...
+var acc_offline_ok := false       # ...unless the server cannot be reached
+var lobby_avatar := ""            # the random Pokémon shown as me in the ranked lobby
 var team_picks := {}              # a 2 vs 2's selection: what each other slot has chosen {slot: {name, species, ready}}
 const ROOM_CHARS := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 const ACC_LIMITS := {"name": 16, "email": 120, "password": 128, "password2": 128}
@@ -164,7 +165,9 @@ func close() -> void:
 func _go(p: String) -> void:
 	# Ranked needs an account: without one the account screen comes first (tests, which
 	# have --ranked_account, make theirs by themselves).
-	if p == "ranked" and not main.ranked.logged_in() and not main.ranked.auto_account():
+	if p in ["room", "replays"] and main.ranked.server_down:
+		p = "ranked"                      # (no server: only its error card is there)
+	if p == "ranked" and not main.ranked.logged_in() and not main.ranked.auto_account() and not main.ranked.server_down:
 		account_open("login")
 		return
 	screen = p
@@ -197,6 +200,9 @@ func _go(p: String) -> void:
 	elif p != "vs":
 		_free_renders()
 	if p == "ranked":
+		if main.ranked.party.is_empty() or lobby_avatar == "":
+			var avatars := pokemon_list()
+			lobby_avatar = str(avatars[randi() % avatars.size()])
 		main.ranked.open()
 
 
@@ -280,7 +286,10 @@ func _menu_frame(delta: float) -> void:
 				_sound("ok")
 				# The first time (no nickname yet) it asks for one; tests skip it unless --force_nick.
 				var skip: bool = has_nickname() or (main._args.has("test") and not main._args.has("force_nick"))
-				_go("main" if skip else "nick")
+				if skip:
+					_enter_main()
+				else:
+					_go("nick")
 		"nick":
 			_name_keyboard()
 		"main":
@@ -324,6 +333,18 @@ func _menu_frame(delta: float) -> void:
 			_profile_input()
 
 
+## From the title (or the first nickname) to the main menu. Whoever has no account makes one (or logs in) right
+## here, at the start of the game, not later when pressing Ranked. Without a server there is nothing to make
+## it with: Esc plays without one. (Tests and the test accounts skip all of this.)
+func _enter_main() -> void:
+	if not main.ranked.logged_in() and not main.ranked.auto_account() and not main._args.has("test"):
+		acc_gate = true
+		acc_offline_ok = false
+		account_open("register", tr("Make an account to play: it keeps your rating and your replays. F2: log in instead."))
+		return
+	_go("main")
+
+
 ## Opens the account screen. "mode": login, register or secure (an old account gets an email
 ## and a password).
 func account_open(mode: String, msg := "") -> void:
@@ -348,12 +369,13 @@ func on_draft(d: Dictionary) -> void:
 	draft = d
 	draft_at = Time.get_ticks_msec() / 1000.0
 	if str(d.get("stage", "")) == "done" and screen == "draft":
-		var slot: int = main.net.slot
-		choice.p1 = str(d.picks[slot])
-		choice.p2 = str(d.picks[1 - slot])
+		var c: ArenaClient = main.net
+		var rival_slot: int = c.enemy_slots()[0]
+		choice.p1 = str(d.picks[c.slot])
+		choice.p2 = str(d.picks[rival_slot])
 		_go("selection")
-		choice.p1 = str(d.picks[slot])
-		choice.p2 = str(d.picks[1 - slot])
+		choice.p1 = str(d.picks[c.slot])
+		choice.p2 = str(d.picks[rival_slot])
 		_to_setup()
 
 
@@ -503,7 +525,7 @@ func _room_type(k: InputEventKey) -> void:
 func _room_create() -> void:
 	_sound("ok")
 	main.ranked.skip_auto = true
-	main.ranked.room_create(room_draft, room_team)
+	main.ranked.party_create()
 	_go("ranked")
 
 
@@ -514,7 +536,7 @@ func _room_join() -> void:
 	room_busy = true
 	room_msg = ""
 	_sound("ok")
-	main.ranked.room_join(room_input, _room_done)
+	main.ranked.party_join(room_input, _room_done)
 
 
 func _room_done(ok: bool, err: String) -> void:
@@ -554,7 +576,10 @@ func _account_key(k: InputEventKey) -> void:
 	var key: String = fields[acc_field]
 	match k.keycode:
 		KEY_ESCAPE:
+			if acc_gate and not acc_offline_ok:
+				return
 			_sound("back")
+			acc_gate = false
 			_go("ranked" if acc_mode == "secure" else "main")
 		KEY_TAB:
 			acc_field = (acc_field + (fields.size() - 1 if k.shift_pressed else 1)) % fields.size()
@@ -649,11 +674,18 @@ func _account_done(ok: bool, err: String) -> void:
 	acc_busy = false
 	if not ok:
 		acc_msg = err
+		if acc_gate and err == tr("Could not reach the ranking server."):
+			acc_offline_ok = true
+			acc_msg = err + " " + tr("Esc: play without an account for now.")
 		return
 	acc.password = ""
 	acc.password2 = ""
 	acc_msg = ""
 	main.ranked.skip_auto = false
+	if acc_gate:
+		acc_gate = false
+		_go("main")
+		return
 	_go("ranked")
 
 
@@ -714,9 +746,18 @@ func _confirm_input() -> void:
 ## and goes back; if nothing is going on (an error, a finished match), A looks again.
 func _ranked_input() -> void:
 	var r: Ranked = main.ranked
+	if r.server_down:
+		if _pressed("menu_back"):
+			_sound("back")
+			_go("main")
+		return
 	match r.state:
 		"idle":
-			if _accept() and r.can_search():
+			if _pressed("move_left"):
+				_set_mode(false)
+			elif _pressed("move_right"):
+				_set_mode(true)
+			if _accept() and r.can_search() and not r.in_party_as_member():
 				_sound("ok")
 				r.search()
 			elif _accept() and not r.loading:
@@ -767,9 +808,10 @@ func _unhandled_input(ev: InputEvent) -> void:
 			and main.ranked.state == "idle" and main.ranked.can_search():
 		room_open()
 		return
-	if is_open and screen in ["ranked", "room"] and ev is InputEventKey and ev.pressed and not ev.echo and ev.keycode in [KEY_F8, KEY_F10] \
-			and (screen == "room" or main.ranked.state == "idle"):
-		_toggle_mode(ev.keycode == KEY_F10)
+	if is_open and screen == "ranked" and ev is InputEventKey and ev.pressed and not ev.echo and ev.keycode == KEY_F5 \
+			and main.ranked.state == "idle" and not main.ranked.party.is_empty():
+		main.ranked.party_leave()
+		_sound("back")
 		return
 	if is_open and screen == "ranked" and ev is InputEventKey and ev.pressed and not ev.echo and ev.keycode in [KEY_F6, KEY_F7] \
 			and main.ranked.state == "idle" and main.ranked.can_search():
@@ -1036,7 +1078,7 @@ func _end_name() -> void:
 		name_edit = false
 		main.options.save()
 		_sound("ok")
-		_go("main")
+		_enter_main()
 		return
 	name_edit = false
 	main.options.save()
@@ -1216,22 +1258,15 @@ func version_mismatch() -> bool:
 	return rival_version != "" and rival_version != Menu.version()
 
 
-## F8 (draft) and F10 (2 vs 2) pick the kind of match, on the Ranked screen and in the room's: they exclude each other.
-func _toggle_mode(team: bool) -> void:
+## The lobby's mode: a ranked 1 vs 1 (alone in the lobby) or a ranked 2 vs 2 (a friend can join). Every ranked
+## match has a draft, so that is not a choice.
+func _set_mode(team: bool) -> void:
 	var r: Ranked = main.ranked
-	if screen == "room":
-		if team:
-			room_team = not room_team
-			room_draft = room_draft and not room_team
-		else:
-			room_draft = not room_draft
-			room_team = room_team and not room_draft
-	elif team:
-		r.team_pref = not r.team_pref
-		r.draft_pref = r.draft_pref and not r.team_pref
-	else:
-		r.draft_pref = not r.draft_pref
-		r.team_pref = r.team_pref and not r.draft_pref
+	if r.state != "idle" or r.team_pref == team or r.in_party_as_member():
+		return
+	r.team_pref = team
+	if not team:
+		r.party_leave()           # a 1 vs 1 lobby is only you
 	_sound("move")
 
 
@@ -1448,10 +1483,11 @@ func _mouse(ev: InputEvent) -> void:
 				_logout()
 			"friend":
 				room_open()
-			"draftpref":
-				_toggle_mode(false)
-			"teampref":
-				_toggle_mode(true)
+			"modetab":
+				_set_mode(z.i == 1)
+			"leave_lobby":
+				main.ranked.party_leave()
+				_sound("back")
 			"dpick":
 				var dl := pokemon_list()
 				if z.i < dl.size():

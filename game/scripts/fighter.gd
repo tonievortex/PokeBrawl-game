@@ -892,13 +892,11 @@ func _read_buffer(delta: float) -> void:
 		else:
 			lock_on_looked()
 		_buffer.erase("lock_on")
-	# The decoy it was locked on is gone: the camera is free; lock on again to find the real
-	# one (the AI just goes back to the rival).
+	# The decoy it was locked on is gone: the lock goes back to the real rival by itself (before, the camera
+	# was left free and players thought the lock-on had broken).
 	if _locked_decoy and not (fooled_by and is_instance_valid(fooled_by) and not fooled_by.is_queued_for_deletion()):
 		_locked_decoy = false
 		fooled_by = null
-		if not ai_driven:
-			locked = false
 	elif fooled_by and is_instance_valid(fooled_by):
 		_locked_decoy = true
 
