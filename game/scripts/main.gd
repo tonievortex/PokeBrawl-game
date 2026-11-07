@@ -103,6 +103,8 @@ func _ready() -> void:
 	options.load_saved()
 	if _args.has("lang"):
 		TranslationServer.set_locale(_args.lang)
+	elif _args.has("test"):
+		TranslationServer.set_locale("en")          # (the tests read the English texts, whatever language this computer has)
 	camera = BattleCamera.new()
 	camera.main = self
 	camera.fov = 62.0

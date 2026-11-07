@@ -23,6 +23,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", required=True)
     ap.add_argument("--show", action="store_true")
+    ap.add_argument("--lang", default="", help="the game's language for the screenshots (the checks read English)")
     args = ap.parse_args()
     godot = os.environ.get("GODOT", "godot")
     tmp = tempfile.mkdtemp()
@@ -37,7 +38,7 @@ def main():
             except Exception:
                 time.sleep(0.1)
         cmd = [godot] + ([] if args.show else ["--headless"]) + ["--path", GAME, "--", "--test=menu_account",
-                                                                  "--ranked_server=http://127.0.0.1:%d" % PORT]
+                                                                  "--ranked_server=http://127.0.0.1:%d" % PORT] + (["--lang=" + args.lang] if args.lang else [])
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace").stdout
         lines = [ln for ln in out.splitlines() if ln.startswith(("OK ", "FAIL ", "ACCOUNT_DONE"))]
         print("\n".join(lines))

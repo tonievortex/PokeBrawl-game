@@ -40,6 +40,11 @@ func _ready() -> void:
 	layer = 5
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_font = load("res://gui/font/pixel.fnt")
+	# Cobblemon's pixel font has no ą ć ę ł ń ś ź ż: those letters come from the system font.
+	var fallback := SystemFont.new()
+	fallback.font_names = PackedStringArray(["Bahnschrift", "Segoe UI", "Arial"])
+	fallback.font_weight = 600
+	_font.fallbacks = [fallback]
 	_font.fixed_size_scale_mode = TextServer.FIXED_SIZE_SCALE_INTEGER_ONLY
 	for n in ["battle/battle_info_base", "battle/battle_info_base_flipped", "battle/battle_info_underlay", "battle/battle_move",
 			"battle/battle_move_overlay", "battle/battle_log", "battle/battle_log_expanded", "battle/arrow_pointer_down", "types", "types_small",

@@ -41,6 +41,12 @@ func _type(text: String) -> void:
 		await _key(KEY_NONE, ch)
 
 
+## A press of the accept button (the menu reads it as a click for one frame).
+func _click() -> void:
+	main.menu._clicked = true
+	await _wait(0.12)
+
+
 func _capture(n: String) -> void:
 	if DisplayServer.get_name() == "headless":
 		return
@@ -149,9 +155,20 @@ func _run() -> void:
 	r.me = base_me
 	await _wait(0.3)
 
-	# Log out with F2 (the search that began by itself is cancelled): back to the login screen.
-	await _key(KEY_F2)
-	_check(m.screen == "account" and m.acc_mode == "login" and not r.logged_in(), "F2 on Ranked logs out and shows the login screen")
+	# Log out from Options (the last row, with a question first): back to the login screen.
+	r.cancel()
+	m._go("options")
+	await _wait(0.4)
+	var list: Array = main.options.items()
+	main.options.cursor = list.size() - 1
+	_check(str(list[list.size() - 1].id) == "logout", "Log out is the very last row of Options (%s)" % str(list[list.size() - 1].id))
+	await _click()
+	await _wait(0.4)
+	_check(not m.confirm.is_empty() and m.screen == "options", "it asks first")
+	m.confirm.on = 1                  # "Yes"
+	await _click()
+	await _wait(0.5)
+	_check(m.screen == "account" and m.acc_mode == "login" and not r.logged_in(), "Log out in Options logs out and shows the login screen")
 	_check(str(m.acc.name) == NAME, "the login screen offers the last name (%s)" % m.acc.name)
 
 	# A wrong password.
@@ -176,5 +193,19 @@ func _run() -> void:
 	# A new copy of the game (the saved token) stays logged in.
 	var saved := FileAccess.get_file_as_string(r._save_path)
 	_check(saved.contains("token") and saved.contains(NAME), "the login is saved on this computer")
+	# A real player (the tests' own accounts search by themselves, a person does not): opening Ranked waits in the
+	# lobby until FIND MATCH is pressed.
+	main._args.erase("ranked_account")
+	r.state = "idle"
+	r.skip_auto = false
+	m._go("main")
+	await _wait(0.3)
+	m._go("ranked")
+	await _wait(2.5)
+	_check(m.screen == "ranked" and r.state == "idle", "opening Ranked waits in the lobby: no search until FIND MATCH (%s)" % r.state)
+	await _click()
+	await _wait(0.5)
+	_check(r.state == "searching", "FIND MATCH starts the search (%s)" % r.state)
+	r.cancel()
 	print("ACCOUNT_DONE %s" % ("ok" if _fails == 0 else "failed"))
 	get_tree().quit(1 if _fails > 0 else 0)

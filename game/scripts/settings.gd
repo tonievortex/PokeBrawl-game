@@ -11,7 +11,7 @@ const PATH := "user://settings.cfg"
 const ROWS := 12                     # rows shown at once on the screen (it scrolls)
 const BINDABLE := ["jump", "dodge", "lock_on", "mov1", "mov2", "mov3", "mov4", "descend", "pause"]
 const FPS_CAPS := [0, 60, 120, 144, 240]
-const LANGUAGES := ["", "en", "es"]
+const LANGUAGES := ["", "en", "es", "pl"]
 
 var main: Node
 var rumble := true
@@ -133,7 +133,12 @@ func items() -> Array:
 	out.append({"id": "rumble", "kind": "toggle", "label": tr("Rumble"),
 		"value": tr("On") if rumble else tr("Off"), "help": tr("The gamepad rumbles on hits.")})
 	out.append({"id": "language", "kind": "choice", "label": tr("Language"),
-		"value": {"": tr("System"), "en": "English", "es": "Español"}[language], "help": tr("The game's language.")})
+		"value": {"": tr("System"), "en": "English", "es": "Español", "pl": "Polski"}[language], "help": tr("The game's language.")})
+	# The account, at the very bottom: only for someone who is logged in.
+	if main != null and main.ranked != null and main.ranked.logged_in():
+		out.append({"id": "h_account", "kind": "header", "label": tr("Account")})
+		out.append({"id": "logout", "kind": "action", "label": tr("Log out"), "value": str(main.ranked.me.get("name", "")),
+			"help": tr("Logs out of this account on this computer. You will have to log in again to play online.")})
 	return out
 
 
@@ -182,6 +187,10 @@ func menu_input(menu: Menu) -> void:
 				waiting = it.id
 				menu._sound("ok")
 			"action":
+				if it.id == "logout":
+					menu._sound("ok")
+					menu._ask_logout()
+					return
 				bindings.clear()
 				apply()
 				save()

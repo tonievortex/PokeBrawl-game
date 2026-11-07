@@ -794,6 +794,11 @@ func _ranked_input() -> void:
 				r.cancel()
 
 
+## Options, "Log out" (with a question first): the account is forgotten on this computer.
+func _ask_logout() -> void:
+	ask(tr("Log out of this account?"), _logout)
+
+
 ## Logs out of the account (the ranking client forgets its token) and shows the login screen.
 func _logout() -> void:
 	_sound("back")
@@ -838,9 +843,6 @@ func _unhandled_input(ev: InputEvent) -> void:
 		return
 	if is_open and screen == "ranked" and ev is InputEventKey and ev.pressed and not ev.echo and main.ranked.state in ["idle", "searching"] \
 			and main.ranked.logged_in() and not main.ranked.loading:
-		if ev.keycode == KEY_F2:
-			_logout()
-			return
 		if ev.keycode == KEY_F3 and not bool(main.ranked.me.get("has_password", true)):
 			account_open("secure")
 			return
@@ -1495,7 +1497,7 @@ func _mouse(ev: InputEvent) -> void:
 			"accgo":
 				_account_submit()
 			"logout":
-				_logout()
+				_ask_logout()
 			"friend":
 				room_open()
 			"modetab":

@@ -121,7 +121,9 @@ func _ready() -> void:
 func open() -> void:
 	if state != "idle":
 		return
-	_auto = not skip_auto
+	# Opening the lobby never starts a search: the player chooses the mode and presses FIND MATCH. (Only the tests,
+	# which have --ranked_account, still search by themselves.)
+	_auto = not skip_auto and auto_account()
 	skip_auto = false
 	loading = true
 	if token == "":

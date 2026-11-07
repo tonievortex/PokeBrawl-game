@@ -18,13 +18,9 @@ const MAIN_TILES := [[70, 150, 760, 690], [870, 150, 520, 330], [1430, 150, 300,
 ## The color of each division (badge, bar and the ranking's names).
 const DIVISION_COLOR := {"Bronze": Color("c27a3b"), "Silver": Color("b9c0cc"), "Gold": Color("ffd23f"), "Platinum": Color("4fd1c5"),
 	"Diamond": Color("5ab4ff"), "Master": Color("c97bff")}
-## Credits at the bottom of the main menu, small. Cobblemon's assets are CC BY-NC 3.0:
-## the team, the license and the non-profit nature are named.
-const CREDITS := ["Created by xjoje6. Made with Godot Engine.",
-	"Models, animations, effects, sounds and battle UI: the Cobblemon team (CC BY-NC 3.0, adapted)",
-	"Music: Pokémon arrangements by The Noble Demon, used with credit as permitted by the artist. Original compositions by GAME FREAK.",
-	"Trainer sprites from the Pokémon games, via Pokémon Showdown. Full credits in CREDITS.txt.",
-	"Non-profit fan project. Pokémon belongs to Nintendo, Creatures Inc., GAME FREAK and The Pokémon Company."]
+## The credit at the bottom of the main menu, small: only the author's. The assets' licenses and everybody's credits
+## (Cobblemon's CC BY-NC 3.0 models and sounds, the music, the trainer sprites) are in CREDITS.txt.
+const CREDITS := ["Created by xjoje6."]
 
 var m: Menu
 var u := UiKit.new()
@@ -329,9 +325,6 @@ func _ranked() -> void:
 		_card(150.0, 940.0 if r.can_search() else y, 760.0, lines,
 			UiKit.RED if r.notice.begins_with("!") else UiKit.GREEN)
 	if r.state in ["idle", "searching"] and r.logged_in() and not r.loading:
-		u.slant(1580.0, 40.0, 200.0, 44.0, UiKit.PANEL_HI)
-		zone("logout", 0, 1580.0, 40.0, 200.0, 44.0)
-		u.text(1680.0, 46.0, tr("F2  Log out"), 24.0, UiKit.INK, u.bold, 0)
 		if not r.me.is_empty() and not bool(r.me.get("has_password", true)):
 			u.slant(950.0, 850.0, 830.0, 100.0, UiKit.YELLOW.lerp(UiKit.ORANGE, 0.3))
 			zone("secure", 0, 950.0, 850.0, 830.0, 100.0)

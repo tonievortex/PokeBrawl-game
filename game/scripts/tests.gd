@@ -84,7 +84,7 @@ func _ready() -> void:
 			# then the options (stage to the floating one, difficulty up) and Fight: VS,
 			# battle, pause and back to the menu.
 			_plan = [[1.5, "", "menu_title"], [1.7, "menu_accept", ""], [2.3, "move_down", ""], [2.6, "", "menu_main"],
-				[2.8, "move_up", ""], [3.0, "menu_accept", ""], [3.8, "move_right", ""], [4.1, "move_down", ""],
+				[2.8, "move_right", ""], [3.0, "menu_accept", ""], [3.8, "move_right", ""], [4.1, "move_down", ""],
 				[4.8, "", "menu_selection"], [5.0, "menu_accept", ""], [5.4, "move_down", ""], [5.9, "", "menu_rival"],
 				[6.1, "menu_accept", ""], [6.4, "move_left", ""], [6.5, "move_left", ""], [6.6, "move_left", ""], [6.7, "move_up", ""],
 				[6.8, "move_right", ""], [6.9, "move_up", ""], [7.0, "move_right", ""], [7.1, "move_right", ""],
