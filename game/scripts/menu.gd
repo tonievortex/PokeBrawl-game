@@ -148,7 +148,13 @@ func open_menu(en := "") -> void:
 		main.arena.process_mode = Node.PROCESS_MODE_DISABLED
 	if en == "":
 		en = "main" if screen != "title" else "title"
-	_go(en)
+	if en == "title" and _needs_account():
+		# The very first screen of the game: whoever has no account makes one (or logs in) before anything else.
+		acc_gate = true
+		acc_offline_ok = false
+		account_open("register", tr("Make an account to play: it keeps your rating and your replays. F2: log in instead."))
+	else:
+		_go(en)
 	if portraits.is_empty() and not _generating:
 		_generate_portraits()
 
@@ -336,8 +342,14 @@ func _menu_frame(delta: float) -> void:
 ## From the title (or the first nickname) to the main menu. Whoever has no account makes one (or logs in) right
 ## here, at the start of the game, not later when pressing Ranked. Without a server there is nothing to make
 ## it with: Esc plays without one. (Tests and the test accounts skip all of this.)
+func _needs_account() -> bool:
+	if main._args.has("force_gate"):
+		return not main.ranked.logged_in()
+	return not main.ranked.logged_in() and not main.ranked.auto_account() and not main._args.has("test")
+
+
 func _enter_main() -> void:
-	if not main.ranked.logged_in() and not main.ranked.auto_account() and not main._args.has("test"):
+	if _needs_account():
 		acc_gate = true
 		acc_offline_ok = false
 		account_open("register", tr("Make an account to play: it keeps your rating and your replays. F2: log in instead."))
@@ -684,6 +696,9 @@ func _account_done(ok: bool, err: String) -> void:
 	main.ranked.skip_auto = false
 	if acc_gate:
 		acc_gate = false
+		# The account's name is the player's name: no second window asking for a nickname.
+		main.options.player_name = str(main.ranked.me.get("name", main.options.player_name)).substr(0, NAME_MAX)
+		main.options.save()
 		_go("main")
 		return
 	_go("ranked")

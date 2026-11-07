@@ -45,7 +45,6 @@ const REPORT_REASONS := ["cheating", "abuse", "leaving", "other"]
 var report_state := ""        # "", "choose", "target" (2 vs 2: which player), "sending", "sent" or "error"
 var report_msg := ""
 var _reported_match := 0
-var draft_pref := true        # (every ranked match is a draft now: ban and pick first)
 var draft_match := false      # the match in progress is a draft
 var team_pref := false        # the lobby's mode: a ranked 2 vs 2 (four players, two teams) instead of a ranked 1 vs 1
 var server_down := false      # the ranking server does not answer: nothing online works until it does

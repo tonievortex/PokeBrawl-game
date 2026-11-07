@@ -47,12 +47,13 @@ def main():
     ap.add_argument("--scenario", default="accept", choices=["accept", "decline", "party", "rematch", "serverdown"])
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--relay-only", action="store_true", help="forbid the direct path: the fight goes through the relay")
-    ap.add_argument("--draft", action="store_true", help="a draft match (ban and pick; needs --arena)")
     ap.add_argument("--team", action="store_true", help="a 2 vs 2 through the ranked queue: four copies (needs --arena)")
     ap.add_argument("--arena", action="store_true", help="the SERVER runs the fight (needs GODOT): the rating follows its result")
     ap.add_argument("--lag", type=int, default=0, help="simulated round trip in ms (each copy)")
     ap.add_argument("--loss", type=int, default=0, help="simulated packet loss in percent")
     args = ap.parse_args()
+    # Every ranked match through the arena is a draft (ban and pick first): there is no switch for it any more.
+    args.draft = args.arena and args.scenario == "accept" and not args.team
     kill_match_servers()
     godot = os.environ.get("GODOT", "godot")
     tmp = tempfile.mkdtemp()
@@ -81,7 +82,7 @@ def main():
                 cmd_room = ["--room=" + ("create" if i == 0 else "join"), "--room_file=" + room_file]
             else:
                 cmd_room = []
-            cmd += ["--path", GAME, "--", "--test=menu_net", "--ranked", "--bot", "--scenario=" + args.scenario] + cmd_room + (["--no_direct"] if args.relay_only else []) + (["--draft"] if args.draft else []) + (["--team"] if (args.team or (args.scenario == "party" and i >= 2)) else []) + (["--lag=%d" % args.lag] if args.lag else []) + (["--loss=%d" % args.loss] if args.loss else []) + [
+            cmd += ["--path", GAME, "--", "--test=menu_net", "--ranked", "--bot", "--scenario=" + args.scenario] + cmd_room + (["--no_direct"] if args.relay_only else [])  + (["--team"] if (args.team or (args.scenario == "party" and i >= 2)) else []) + (["--lag=%d" % args.lag] if args.lag else []) + (["--loss=%d" % args.loss] if args.loss else []) + [
                     "--ranked_server=" + BASE, "--ranked_account=" + acc + str(os.getpid())]
             logf = open(os.path.join(tmp, "copy_%s.log" % acc), "w", encoding="utf-8")
             procs.append(subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, text=True))

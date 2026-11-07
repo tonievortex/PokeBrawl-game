@@ -68,6 +68,14 @@ func _run() -> void:
 	r.last_name = ""
 	m.acc.name = ""
 	await _wait(1.5)
+	# The first screen of the game: with no account, the account screen comes before everything else.
+	main._args["force_gate"] = "1"
+	m.screen = "title"
+	m.open_menu()
+	await _wait(0.3)
+	_check(m.screen == "account" and m.acc_gate and m.acc_mode == "register", "the game starts on the account screen when there is no account (%s, register %s)" % [m.screen, m.acc_mode == "register"])
+	main._args.erase("force_gate")
+	m.acc_gate = false
 	m._go("ranked")
 	await _wait(0.3)
 	_check(m.screen == "account" and m.acc_mode == "login", "Ranked without an account opens the login screen (%s, %s)" % [m.screen, m.acc_mode])
